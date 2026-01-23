@@ -20,13 +20,21 @@ hybrid_data <- crabpack::get_specimen_data(species = "HYBRID",
                                              region = "EBS", # can also include NBS
                                              channel = channel)
 
+saveRDS(hybrid_data, "./Data/hybrid_specimen.rda")
+
 snow_data <- crabpack::get_specimen_data(species = "SNOW",
                                          region = "EBS", # can also include NBS
                                          channel = channel)
 
+saveRDS(snow_data, "./Data/snow_specimen.rda")
+
+
 tanner_data <- crabpack::get_specimen_data(species = "TANNER",
                                          region = "EBS", # can also include NBS
                                          channel = channel)
+
+saveRDS(tanner_data, "./Data/tanner_specimen.rda")
+
 
 # 6) Calculate per-station CPUE by 1mm size bin
 hybrid_cpue <- crabpack::calc_cpue(crab_data = hybrid_data,
@@ -35,7 +43,7 @@ hybrid_cpue <- crabpack::calc_cpue(crab_data = hybrid_data,
                             bin_1mm = TRUE,
                             size_min = NULL,
                             size_max = NULL,
-                            crab_category = "all_categories")
+                            sex = "all_categories")
 
 snow_cpue <- crabpack::calc_cpue(crab_data = snow_data,
                                    species = "SNOW",
@@ -43,15 +51,16 @@ snow_cpue <- crabpack::calc_cpue(crab_data = snow_data,
                                    bin_1mm = TRUE,
                                    size_min = NULL,
                                    size_max = NULL,
-                                   crab_category = "all_categories")
+                                   sex = "all_categories")
 
 tanner_cpue <- crabpack::calc_cpue(crab_data = tanner_data,
                                    species = "TANNER",
                                    region = "EBS",
+                                   years = c(1980:2025),
                                    bin_1mm = TRUE,
                                    size_min = NULL,
                                    size_max = NULL,
-                                   crab_category = "all_categories")
+                                   sex = c("all_categories"))
 
 # 7) filter by stations where we only find hybrids
 positive_catch <- hybrid_cpue %>% 
@@ -84,12 +93,23 @@ ggplot(out, aes(SIZE_1MM, PROP_CPUE, color = SEX_TEXT))+
   geom_smooth() 
 
 # 9) calculate biomass and abudance
-hybrid_bioabund <- crabpack::calc_bioabund(crab_data = hybrid_data,
+female <- crabpack::calc_bioabund(crab_data = hybrid_data,
                                    species = "HYBRID",
                                    region = "EBS",
                                    size_min = 70,
+                                   crab_category = "all_categories",
                                    sex = "female")
 
+male <- crabpack::calc_bioabund(crab_data = hybrid_data,
+                                  species = "HYBRID",
+                                  region = "EBS",
+                                  size_min = 80,
+                                  crab_category = "all_categories",
+                                  sex = "male")
+
+write.csv(rbind(female, male), "./Data/hybrid_bioabund.csv")
+          
+          
 # plot
 ggplot(hybrid_bioabund, aes(YEAR, ABUNDANCE, color = CATEGORY))+
   geom_line(linewidth = 1) +
