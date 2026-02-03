@@ -1,12 +1,5 @@
 # PURPOSE: 
-# To get updated survey data by year for chela maturity processing
-
-# Notes:
-# 1) What is the best way to update data? Use the chela database and then specimen data each new year? Or will
-# the chela database be updated in time?
-
-# LOAD LIBS/PARAMS -----
-source("./Scripts/load_libs_params.R")
+# Example workflow for querying crabpack data
 
 # Set channel
 channel <- "API"
@@ -28,11 +21,6 @@ snow_cpue <- calc_cpue(crab_data = specimen_data,
                        species = species,
                        crab_category = c("mature_female", "immature_female"))
 
-# Calculate CPUE for mature/immature male
-snow_mod <- readRDS("Y:/KOD_Research/Ryznar/Crab functional maturity/SNOW/sdmTMB/sdmTMB_spVAR_SIZE_k300_BEST.rda")
-
-
-
 # GET TANNER SURVEY SPECIMEN/CPUE/BIOABUND DATA FROM CRABPACK ----
 # Pull specimen data
 species <- "TANNER"
@@ -43,5 +31,7 @@ specimen_data <- crabpack::get_specimen_data(species = species,
 
 saveRDS(specimen_data, "./Data/tanner_survey_specimenEBS.rda")
 
-# Calculate CPUE for mature/immature male
-tanner_mod <- readRDS("Y:/KOD_Research/Ryznar/Crab functional maturity/TANNER/sdmTMB/sdmTMB_spVAR_SIZE_k200_BEST.rda")
+# Calculate CPUE for large/small males
+tanner_cpue <- calc_cpue(crab_data = specimen_data,
+                       species = species,
+                       crab_category = c("large_female", "small_male"))
