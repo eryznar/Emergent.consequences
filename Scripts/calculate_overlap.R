@@ -65,7 +65,7 @@ s.male_t.fem <- rbind(
                   CATEGORY, DISTRICT, STRATUM, TOTAL_AREA, CPUE, CPUE_MT, CPUE_LBS),
   tanner_fem_cpue %>%
     dplyr::select(!COUNT)) %>%
-  filter(YEAR >= 1989) %>%
+  filter(YEAR >= 1980) %>%
   group_by(YEAR, STATION_ID, LATITUDE, LONGITUDE, CATEGORY, SPECIES) %>%
   reframe(CPUE = sum(CPUE), .groups = "drop_last") %>%  # keep YEAR, STATION_ID, ... groups
   group_by(YEAR, SPECIES) %>%
@@ -129,7 +129,7 @@ s.male_t.fem <- rbind(
                   CATEGORY, DISTRICT, STRATUM, TOTAL_AREA, CPUE, CPUE_MT, CPUE_LBS),
   tanner_fem_cpue %>%
     dplyr::select(!COUNT)) %>%
-  filter(YEAR >= 1988) %>%
+  filter(YEAR >= 1980) %>%
   group_by(YEAR, STATION_ID, LATITUDE, LONGITUDE, CATEGORY, SPECIES) %>%
   reframe(CPUE = sum(CPUE), .groups = "drop_last") %>%  # keep YEAR, STATION_ID, ... groups
   group_by(YEAR, SPECIES) %>%
@@ -204,7 +204,7 @@ s.fem_t.male <- rbind(
                   CATEGORY, DISTRICT, STRATUM, TOTAL_AREA, CPUE, CPUE_MT, CPUE_LBS),
   snow_fem_cpue %>%
     dplyr::select(!COUNT)) %>%
-  filter(YEAR >= 1990) %>%
+  filter(YEAR >= 1980) %>%
   group_by(YEAR, STATION_ID, LATITUDE, LONGITUDE, CATEGORY, SPECIES) %>%
   reframe(CPUE = sum(CPUE), .groups = "drop_last") %>%  # keep YEAR, STATION_ID, ... groups
   group_by(YEAR, SPECIES) %>%
@@ -268,7 +268,7 @@ t.male_s.fem <- rbind(
                   CATEGORY, DISTRICT, STRATUM, TOTAL_AREA, CPUE, CPUE_MT, CPUE_LBS),
   snow_fem_cpue %>%
     dplyr::select(!COUNT)) %>%
-  filter(YEAR >= 1988) %>%
+  filter(YEAR >= 1980) %>%
   group_by(YEAR, STATION_ID, LATITUDE, LONGITUDE, CATEGORY, SPECIES) %>%
   reframe(CPUE = sum(CPUE), .groups = "drop_last") %>%  # keep YEAR, STATION_ID, ... groups
   group_by(YEAR, SPECIES) %>%
