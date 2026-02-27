@@ -44,7 +44,7 @@ dir <- "Y:/KOD_Research/Ryznar/Crab functional maturity"
 
 data_dir <- "Y:/KOD_Survey/EBS Shelf/Data_Processing/Data/" # for survey data
 
-remote_dir <- "Y:/KOD_Research/Ryznar/Crab functional maturity/"
+remote_dir <- "Y:/KOD_Research/Ryznar/Emergent consequences/"
 
 # CRS for spatial blocking
 region_layers <- akgfmaps::get_base_layers("sebs")

@@ -197,6 +197,26 @@ long_dat <- mod.dat2 %>%
               pivot_longer(., cols = c("HYBRID_CPUE", "TANNER_CPUE"), names_to = "resp_name", values_to = "resp_value")
 
 # FIT DSEM MODELS ----
+dsem_df <- data.frame(
+  from = c("sea_ice", "sea_ice", "sea_ice", "sea_ice",
+           "snow_abundance", "tanner_abundance",
+           "snow_tanner_overlap"),
+  to   = c("snow_abundance", "snow_tanner_overlap",
+           "tanner_abundance", "hybrid_abundance",
+           "hybrid_abundance", "hybrid_abundance",
+           "hybrid_abundance"),
+  lag  = c(1, 1, 5, 5,
+           3, 3,
+           5)
+)
+
+dsem <- make_dsem_ram(
+  arrows = dsem_df,
+  variables = c("sea_ice", "snow_abundance",
+                "tanner_abundance", "snow_tanner_overlap",
+                "hybrid_abundance")
+)
+
 # Fit model
 fit_tv <- tinyVAST(
   formula        = CPUE ~ 0 + YEAR_F,
