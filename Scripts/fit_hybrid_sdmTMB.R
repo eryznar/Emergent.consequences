@@ -6,6 +6,19 @@ channel <- "API"
 # 4) Set species
 species <- "HYBRID"
 
+library(terra)
+
+f <- "Y:/KOD_Survey/EBS Shelf/Spatial crab/Environmental layers/EBS_phi_1km.grd"
+sed <- raster(f)
+sed_df <- as.data.frame(sed, xy = TRUE)  # xy = coordinates of cell centers
+
+region_layers$survey.area -> pp
+ebs.sed <- sed_df %>%
+  st_as_sf(., coords = c("x", "y")) %>%
+  st_transform(., st_crs(pp)) %>%
+  st_intersection(., pp)
+
+
 # # 5) Pull specimen data
 # hybrid_data <- crabpack::get_specimen_data(species = "HYBRID",
 #                                            region = "EBS", # can also include NBS
