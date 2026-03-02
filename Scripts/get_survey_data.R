@@ -35,3 +35,20 @@ saveRDS(specimen_data, "./Data/tanner_survey_specimenEBS.rda")
 tanner_cpue <- calc_cpue(crab_data = specimen_data,
                        species = species,
                        crab_category = c("large_female", "small_male"))
+
+
+
+## HYBRIDS ----
+# 
+# # 3) Set channel
+# channel <- "API"
+# 
+# # 4) Set species
+# species <- "HYBRID"
+# 
+# # # 5) Pull specimen data
+# # hybrid_data <- crabpack::get_specimen_data(species = "HYBRID",
+# #                                            region = "EBS", # can also include NBS
+# #                                            channel = channel)
+# # 
+# # saveRDS(hybrid_data, "./Data/hybrid_specimen.rda")

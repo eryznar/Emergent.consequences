@@ -1,17 +1,5 @@
 source("./Scripts/load_libs_params.R")
-# 
-# # 3) Set channel
-# channel <- "API"
-# 
-# # 4) Set species
-# species <- "HYBRID"
-# 
-# # # 5) Pull specimen data
-# # hybrid_data <- crabpack::get_specimen_data(species = "HYBRID",
-# #                                            region = "EBS", # can also include NBS
-# #                                            channel = channel)
-# # 
-# # saveRDS(hybrid_data, "./Data/hybrid_specimen.rda")
+
 
 hybrid_data <- readRDS("./Data/hybrid_specimen.rda")
 
@@ -22,39 +10,223 @@ spec2 <- hybrid_data$specimen %>%
 hybrid_data$specimen <- spec2
 
 
-# 6) Calculate per-station CPUE by 1mm size bin
+# Calculate per-station CPUE by 1mm size bin
 hybrid_cpue <- crabpack::calc_cpue(crab_data = hybrid_data,
                                    species = "HYBRID",
                                    region = "EBS",
                                    size_min = NULL,
                                    size_max = NULL)
 
-db_abund <-  crabpack::calc_bioabund(crab_data = hybrid_data,
-                                 species = "HYBRID",
-                                 region = "EBS",
-                                 size_min = NULL,
-                                 size_max = NULL) %>%
-                mutate(ABUNDANCE = ABUNDANCE/1e6,
-                       ABUNDANCE_CI = ABUNDANCE_CI/1e6) %>%
-                filter(YEAR >=1980)
 
+# transform model dat to sf
 mod.dat <- hybrid_cpue %>%
               group_by(YEAR, STATION_ID, LATITUDE, LONGITUDE) %>%
               reframe(CPUE = sum(CPUE)) %>%
               st_as_sf(., coords = c("LONGITUDE", "LATITUDE"), crs = "+proj=longlat +datum=WGS84") %>%
-              st_transform(., crs = "+proj=utm +zone=2") %>%
-              cbind(st_coordinates(.)) %>%
-              as.data.frame(.) %>%
-              mutate(LATITUDE = Y/1000, # scale to km so values don't get too large
-                     LONGITUDE = X/1000,
-                     YEAR_F = as.factor(YEAR)) %>%
-              dplyr::select(!c(X, Y, geometry)) %>%
-              filter(YEAR >=1980)
+              st_transform(., crs = "+proj=utm +zone=2")
+
+# Add sediment
+f <- "Y:/KOD_Survey/EBS Shelf/Spatial crab/Environmental layers/EBS_phi_1km.grd"
+sed <- raster(f)
+sed.df <- as.data.frame(sed, xy = TRUE)  # xy = coordinates of cell centers
+tt <- crs(sed)
+sed.sf <- sed.df %>%
+  st_as_sf(coords = c("x", "y"),
+           crs = tt) %>%
+  st_transform(crs = "+proj=utm +zone=2")
+
+mod.dat <- st_join(mod.dat, sed.sf, join = st_nearest_feature) %>%
+            rename(sed = X3.pred)
+
+# Add ice by year
+ice <- read.csv("./Output/spatial_ice_means_1980-2025.csv") %>%
+  group_by(year, latitude, longitude) %>%
+  summarise(value = mean(value), .groups = "drop") %>%
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = "+proj=longlat +datum=WGS84") %>%
+  st_transform(crs = st_crs(mod.dat))   # ensure same CRS
+
+mod.dat$ice <- NA_real_
+
+for (y in sort(unique(mod.dat$YEAR))) {
+  idx_cpue <- which(mod.dat$YEAR == y)
+  if (!length(idx_cpue)) next
+  
+  ice_y <- ice[ice$year == y, ]
+  if (nrow(ice_y) == 0) next
+  
+  # nearest ice cell for that year
+  nn_idx <- st_nearest_feature(mod.dat[idx_cpue, ], ice_y)
+  
+  # assign ice value
+  mod.dat$ice[idx_cpue] <- ice_y$value[nn_idx]
+}
+
+# Transform to data frame
+mod.df <- mod.dat %>%
+            cbind(st_coordinates(.)) %>%
+            as.data.frame(.) %>%
+            mutate(LONGITUDE = X/1000,
+                   LATITUDE = Y/1000) %>%
+            dplyr::select(!c(X, Y, geometry)) %>%
+            rename(SED = sed, ICE = ice)
+
+# Add depth and bottom temp
+mod.df2 <- hybrid_data$haul %>%
+            dplyr::select(YEAR, STATION_ID, BOTTOM_DEPTH, GEAR_TEMPERATURE) %>%
+            right_join(mod.df, .) %>%
+            filter(YEAR >=1988) %>%
+            rename(DEPTH = BOTTOM_DEPTH, BTEMP = GEAR_TEMPERATURE) %>%
+            mutate(YEAR_F = as.factor(YEAR),
+                   YEAR_SCALED = scale(YEAR),
+                   ICE_SCALED = scale(ICE),
+                   DEPTH_SCALED = scale(DEPTH),
+                   BTEMP_SCALED = scale(BTEMP),
+                   SED_SCALED = scale(SED),
+                DEPTH_SCALED = as.numeric(DEPTH_SCALED),
+                BTEMP_SCALED = as.numeric(BTEMP_SCALED),
+                ICE_SCALED   = as.numeric(ICE_SCALED),
+                SED_SCALED   = as.numeric(SED_SCALED)) %>%
+            filter(is.finite(DEPTH_SCALED),
+                   is.finite(BTEMP_SCALED),
+                   is.finite(ICE_SCALED),
+                   is.finite(SED_SCALED))
+          
+
+# Plot
+ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = ICE)) +
+  geom_tile(width = 45, height = 45) +
+  theme_bw() +
+  facet_wrap(~YEAR) +
+  scale_fill_viridis_c()
+
+ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = SED)) +
+  geom_tile(width = 45, height = 45) +
+  theme_bw() +
+  facet_wrap(~YEAR) +
+  scale_fill_viridis_c()
+
+ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = DEPTH)) +
+  geom_tile(width = 45, height = 45) +
+  theme_bw() +
+  facet_wrap(~YEAR) +
+  scale_fill_viridis_c()
+
+ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
+  geom_tile(width = 45, height = 45) +
+  theme_bw() +
+  facet_wrap(~YEAR) +
+  scale_fill_viridis_c()
 
 
-# FIT MODELS ----
+# FIT MODELS WITH COVARIATEES ----
+# Build mesh
+mesh <- make_mesh(mod.df2, c("LONGITUDE","LATITUDE"), n_knots = 90, type = "kmeans")
+
+# Fit model
+mod <- sdmTMB(
+        CPUE ~ 0 + s(DEPTH_SCALED, k=4) + s(BTEMP_SCALED, k=4) + s(ICE_SCALED, k=4) + s(SED_SCALED, k=4),
+        time_varying = ~ 0 + DEPTH_SCALED + ICE_SCALED + BTEMP_SCALED + SED_SCALED,
+        time_varying_type = "ar1",           # or "ar1"
+        mesh = mesh,
+        extra_time = c(2020),
+        family = tweedie(link = "log"),
+        time = "YEAR",
+        spatial = "on",
+        data = mod.df2,
+        silent = FALSE
+      )
+
+# Diagnostics
+sanity(mod)
+
+# Plot effects
+cov_means <- mod.df2 %>%
+  summarise(
+    DEPTH_SCALED = mean(DEPTH_SCALED, na.rm = TRUE),
+    BTEMP_SCALED = mean(BTEMP_SCALED, na.rm = TRUE),
+    ICE_SCALED   = mean(ICE_SCALED,   na.rm = TRUE),
+    SED_SCALED   = mean(SED_SCALED,   na.rm = TRUE)
+  )
+
+years_use <- sort(unique(mod.df2$YEAR))
+
+
+make_tv_effect <- function(mod, data, focal, n,
+                           years,
+                           cov_means) {
+  
+  rng <- range(data[[focal]], na.rm = TRUE)
+  x   <- seq(rng[1], rng[2], length.out = n)
+  
+  nd <- expand.grid(
+    focal_val = x,
+    YEAR      = years
+  ) |>
+    as_tibble() |>
+    mutate(
+      DEPTH_SCALED = cov_means$DEPTH_SCALED,
+      BTEMP_SCALED = cov_means$BTEMP_SCALED,
+      ICE_SCALED   = cov_means$ICE_SCALED,
+      SED_SCALED   = cov_means$SED_SCALED
+    ) |>
+    mutate(!!focal := focal_val, .keep = "unused")
+  
+  # predictions on link scale
+  pred_raw <- predict(
+    mod,
+    newdata = nd,
+    re_form = ~ 0,
+    type    = "link",   # IMPORTANT: link scale
+    se_fit  = TRUE
+  )
+  
+  # keep only prediction columns
+  pred <- pred_raw |>
+    dplyr::select(est, est_se)
+  
+  out <- bind_cols(nd, pred)
+  
+  # back-transform Tweedie/log link to response scale
+  out <- out |>
+    mutate(
+      est_resp = exp(est))
+  
+  out
+}
+
+# call function (no duplicate-column messages now)
+pred_depth <- make_tv_effect(
+  mod,
+  data      = mod.df2,
+  focal     = "DEPTH_SCALED",
+  n         = 100,
+  years     = years_use,
+  cov_means = cov_means
+)
+options(bitmapType = "cairo") 
+ggplot() +
+  geom_line(pred_depth, mapping = aes(DEPTH_SCALED, est_resp, color = YEAR, group = YEAR), size = 1)+
+  theme_bw()+
+  scale_color_viridis_c()+
+  geom_ribbon(pred_depth, mapping = aes(DEPTH_SCALED, ymin = est_resp - est_se,
+                                        ymax = est_resp + est_se, fill = YEAR), alpha = 0.5)
+
+
+# FIT MODELS WITHOUT COVARIATES ----
 # Build mesh
 mesh <- make_mesh(mod.dat, c("LONGITUDE","LATITUDE"), n_knots = 90, type = "kmeans")
+
+# Fit model
+mod <- sdmTMB(CPUE ~ 0 + YEAR_F, #the 0 is there so there is a factor predictor for each time slice
+                spatial = "on",
+                spatiotemporal = "iid",
+                mesh = mesh,
+                family = delta_gamma(type = "poisson-link"),
+                time = "YEAR",
+                extra_time = c(2020),
+                anisotropy = TRUE,
+                data = mod.df2)
 
 # Fit model
 # mod.1 <- sdmTMB(CPUE ~ 0 + YEAR_F, #the 0 is there so there is a factor predictor for each time slice
@@ -128,75 +300,3 @@ ggplot(spat.preds %>% filter(YEAR %in% c(2019:2025)), aes(LONGITUDE, LATITUDE, f
   theme_bw()+
   facet_wrap(~YEAR, nrow = 3)+
   scale_fill_viridis_c(option = 'mako')
-
-
-# ADD COVARIATES ----
-# Ice
-# Ice as sf in UTM, retaining year
-ice <- read.csv("./Output/spatial_ice_means_1980-2025.csv") %>%
-  group_by(year, latitude, longitude) %>%
-  summarise(value = mean(value), .groups = "drop") %>%
-  st_as_sf(coords = c("longitude", "latitude"),
-           crs = "+proj=longlat +datum=WGS84") %>%
-  st_transform(crs = "+proj=utm +zone=2")
-
-# CPUE as sf in same CRS (assumes LONGITUDE/LATITUDE are WGS84)
-mod_sf <- st_as_sf(mod.dat,
-                   coords = c("LONGITUDE", "LATITUDE"),
-                   crs = "+proj=longlat +datum=WGS84") %>%
-  st_transform(crs = st_crs(ice))
-
-mod_sf$ice <- NA_real_
-
-for (y in sort(unique(mod_sf$YEAR))) {
-  # CPUE points for this year
-  idx_cpue <- which(mod_sf$YEAR == y)
-  if (!length(idx_cpue)) next
-  
-  # Ice points for this year
-  ice_y <- ice[ice$year == y, ]
-  if (nrow(ice_y) == 0) next
-  
-  # Nearest ice point index for each CPUE point (within this year)
-  nn_idx <- st_nearest_feature(mod_sf[idx_cpue, ], ice_y)
-  
-  # Assign ice value
-  mod_sf$ice[idx_cpue] <- ice_y$value[nn_idx]
-}
-
-mod.dat$ICE <- mod_sf$ice[match(seq_len(nrow(mod.dat)), as.integer(st_drop_geometry(mod_sf$rowid %||% 1:nrow(mod_sf))))]
-
-ggplot(mod.dat, aes(LONGITUDE, LATITUDE, fill = ICE)) +
-  geom_tile(width = 45, height = 45) +
-  theme_bw() +
-  facet_wrap(~YEAR) +
-  scale_fill_viridis_c()
-
-# Snow cpue
-snow_cpue <- crabpack::calc_cpue(crab_data = readRDS("./Data/snow_specimen.rda"),
-                                 species = "SNOW",
-                                 region = "EBS")
-
-# Tanner cpue
-tanner_cpue <- crabpack::calc_cpue(crab_data = readRDS("./Data/tanner_specimen.rda"),
-                                   species = "TANNER",
-                                   region = "EBS")
-
-# Add snow and tanner cpue to mod.dat
-mod.dat2 <- mod.dat %>%
-  as.data.frame() %>%
-  dplyr::select(!c(X, Y, geometry)) %>%
-  rename(HYBRID_CPUE = CPUE) %>%
-  inner_join(.,
-             snow_cpue %>%
-               dplyr::select(YEAR, STATION_ID, CPUE) %>%
-               rename(SNOW_CPUE = CPUE) %>%
-               filter(YEAR >= 1988),
-             by = c("YEAR", "STATION_ID")) %>%
-  inner_join(.,
-             tanner_cpue %>%
-               dplyr::select(YEAR, STATION_ID, CPUE) %>%
-               rename(TANNER_CPUE = CPUE) %>%
-               filter(YEAR >= 1988),
-             by = c("YEAR", "STATION_ID"))
-
