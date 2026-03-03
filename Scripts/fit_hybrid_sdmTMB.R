@@ -98,7 +98,7 @@ mod.df2 <- hybrid_data$haul %>%
           
 
 # Plot
-ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = ICE)) +
+ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = ICE)) +
   geom_tile(width = 45, height = 45) +
   theme_bw() +
   facet_wrap(~YEAR) +
@@ -116,12 +116,36 @@ ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = DEPTH)) +
   facet_wrap(~YEAR) +
   scale_fill_viridis_c()
 
-ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
+ggplot(mod.df2%>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
   geom_tile(width = 45, height = 45) +
   theme_bw() +
   facet_wrap(~YEAR) +
   scale_fill_viridis_c()
 
+ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = BTEMP)) +
+  geom_tile(width = 45, height = 45) +
+  theme_bw() +
+  facet_wrap(~YEAR) +
+  scale_fill_viridis_c()
+
+
+cor_dat <- mod.df2 %>%
+  dplyr::select(where(is.numeric)) %>%
+  dplyr::select(ICE_SCALED, DEPTH_SCALED, BTEMP_SCALED, SED_SCALED)
+
+# compute correlation matrix
+cor_mat <- cor(cor_dat, use = "pairwise.complete.obs")
+
+# plot
+corrplot::corrplot(
+  cor_mat,
+  method      = "color",
+  type        = "upper",
+  tl.col      = "black",
+  tl.srt      = 45,
+  addCoef.col = "black",   # show correlation values
+  number.cex  = 0.7        # adjust as needed
+)
 
 # FIT MODELS WITH COVARIATEES ----
 # Build mesh
@@ -161,8 +185,10 @@ cov_means <- mod.df2 %>%
     ICE_SCALED   = mean(ICE_SCALED,   na.rm = TRUE)
   )
 
-years_use <- 1990:2025
+# Focal years
+years_use <- c(1990:2019, 2021:2025)
 
+# Helper functions
 make_tv_effect_quad <- function(mod, data,
                                 focal,          # "DEPTH_SCALED" or "SED_SCALED"
                                 n,
@@ -201,10 +227,121 @@ make_tv_effect_quad <- function(mod, data,
     nd,
     dplyr::select(pred_raw, est, est_se)
   ) |>
-    mutate(est_resp = exp(est))
+    mutate(est_resp = exp(est),
+           period = case_when(YEAR %in% 2024:2025 ~ "2024:2025",
+                              TRUE ~ "<2024"))
   
   out
 }
+
+get_mu_sigma <- function(x, w) {
+  w <- pmax(w, 0)
+  w <- w / sum(w)
+  mu <- sum(x * w)
+  sigma <- sqrt(sum((x - mu)^2 * w))
+  tibble(mu = mu, sigma = sigma)   # <- data frame, not vector
+}
+
+niche_n_mu_sigma_test <- function(pred_dat,
+                                  focal = c("DEPTH_SCALED", "SED_SCALED"),
+                                  break_year = 2024,
+                                  nperm = 999) {
+  focal <- match.arg(focal)
+  
+  # summarise to mu, sigma per year
+  mu_sd <- pred_dat %>%
+    group_by(YEAR) %>%
+    reframe(get_mu_sigma(.data[[focal]], est_resp)) %>%
+    mutate(period = if_else(YEAR >= break_year, "post", "pre"))
+  
+  # observed stats
+  obs_stats <- mu_sd %>%
+    group_by(period) %>%
+    summarise(
+      mu_mean    = mean(mu),
+      sigma_mean = mean(sigma),
+      .groups = "drop"
+    )
+  
+  obs_T_mu    <- obs_stats$mu_mean[obs_stats$period == "post"] -
+    obs_stats$mu_mean[obs_stats$period == "pre"]
+  obs_T_sigma <- obs_stats$sigma_mean[obs_stats$period == "post"] -
+    obs_stats$sigma_mean[obs_stats$period == "pre"]
+  
+  # permutation
+  perm_T_mu    <- numeric(nperm)
+  perm_T_sigma <- numeric(nperm)
+  
+  for (i in seq_len(nperm)) {
+    perm_period <- sample(mu_sd$period)
+    
+    perm_stats <- mu_sd %>%
+      mutate(perm_period = perm_period) %>%
+      group_by(perm_period) %>%
+      summarise(
+        mu_mean    = mean(mu),
+        sigma_mean = mean(sigma),
+        .groups = "drop"
+      )
+    
+    perm_T_mu[i] <- perm_stats$mu_mean[perm_stats$perm_period == "post"] -
+      perm_stats$mu_mean[perm_stats$perm_period == "pre"]
+    perm_T_sigma[i] <- perm_stats$sigma_mean[perm_stats$perm_period == "post"] -
+      perm_stats$sigma_mean[perm_stats$perm_period == "pre"]
+  }
+  
+  p_mu    <- mean(abs(perm_T_mu)    >= abs(obs_T_mu))
+  p_sigma <- mean(abs(perm_T_sigma) >= abs(obs_T_sigma))
+  
+  tibble(
+    focal       = focal,
+    obs_T_mu    = obs_T_mu,
+    p_mu        = p_mu,
+    obs_T_sigma = obs_T_sigma,
+    p_sigma     = p_sigma
+  )
+}
+
+niche_slope_test <- function(slope_dat,
+                             slope_col = "slope",
+                             break_year = 2024,
+                             nperm = 999) {
+  
+  library(dplyr)
+  slope_sym <- rlang::sym(slope_col)
+  
+  dat <- slope_dat %>%
+    ungroup() %>%
+    filter(!is.na(!!slope_sym)) %>%        # remove NA slopes
+    mutate(period = if_else(YEAR >= break_year, "post", "pre"))
+  
+  # observed stats
+  obs_stats <- dat %>%
+    group_by(period) %>%
+    summarise(mean_slope = mean(!!slope_sym), .groups = "drop")
+  
+  obs_T <- obs_stats$mean_slope[obs_stats$period == "post"] -
+    obs_stats$mean_slope[obs_stats$period == "pre"]
+  
+  nperm <- 999
+  perm_T <- numeric(nperm)
+  
+  for (i in seq_len(nperm)) {
+    perm_period <- sample(dat$period)
+    perm_stats <- dat %>%
+      mutate(perm_period = perm_period) %>%
+      group_by(perm_period) %>%
+      summarise(mean_slope = mean(!!slope_sym), .groups = "drop")
+    perm_T[i] <- perm_stats$mean_slope[perm_stats$perm_period == "post"] -
+      perm_stats$mean_slope[perm_stats$perm_period == "pre"]
+  }
+  
+  p_val <- mean(abs(perm_T) >= abs(obs_T))
+  
+  tibble(obs_T = obs_T, p_value = p_val)
+}
+
+
 
 
 # Depth
@@ -217,18 +354,48 @@ pred_depth <- make_tv_effect_quad(
   cov_means = cov_means
 )
 
-pp <- pred_depth %>%
-          mutate(period = case_when(
-            YEAR < 2018        ~ "pre-heatwave",
-            YEAR %in% 2018:2019 ~ "heatwave",
-            YEAR >= 2020        ~ "post-heatwave"))
+depth_mu_sd <- pred_depth %>%
+  group_by(YEAR) %>%
+  reframe(get_mu_sigma(DEPTH_SCALED, est_resp)) %>%
+  mutate(period = case_when(YEAR %in% 2024:2025 ~ "2024:2025",
+                            TRUE ~ "<2024"))
+
+niche_n_mu_sigma_test(pred_depth,
+                      focal = c("DEPTH_SCALED"),
+                      break_year = 2024,
+                      nperm = 999)
+
+ggplot(depth_mu_sd, aes(x = sigma, y = mu, color = period)) +
+  scale_color_manual(values = c("cadetblue", "gold"))+
+  geom_point(size = 2) +
+  geom_text(aes(label = YEAR),
+            nudge_y = 0.03, size = 4)+
+  theme_bw()+
+  ylab("Optimum (μ)")+
+  xlab("Breadth (σ)")+
+  #ggtitle("Depth")+
+  theme(legend.position = "none",
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12))
+
+ggsave("./Figures/depth_musigma.png", width = 7, height = 5)
+  
 
 ggplot() +
-  geom_line(pp, mapping = aes(DEPTH_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_depth, mapping = aes(DEPTH_SCALED, est_resp, color = period, group = YEAR), size = 1)+
   theme_bw()+
-  ylab("CPUE")+
-  ggtitle("Depth")+
-  scale_color_viridis_d()
+  ylab("Hybrid CPUE")+
+  #ggtitle("Depth")+
+  xlab("Depth scaled")+
+  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+ggsave("./Figures/depth_predcurves.png", width = 7, height = 5)
+
 
 # Sediment
 pred_sed <- make_tv_effect_quad(
@@ -239,18 +406,47 @@ pred_sed <- make_tv_effect_quad(
   years     = years_use,
   cov_means = cov_means
 )
-pp <- pred_sed %>%
-  mutate(period = case_when(
-      YEAR < 2018        ~ "pre-heatwave",
-      YEAR %in% 2018:2019 ~ "heatwave",
-      YEAR >= 2020        ~ "post-heatwave"))
+
+
+niche_n_mu_sigma_test(pred_sed,
+                      focal = c("SED_SCALED"),
+                      break_year = 2024,
+                      nperm = 999)
+
+sed_mu_sd <- pred_sed %>%
+  group_by(YEAR) %>%
+  reframe(get_mu_sigma(SED_SCALED, est_resp)) %>%
+  mutate(period = case_when(YEAR %in% 2024:2025 ~ "2024:2025",
+                            TRUE ~ "<2024"))
+
+ggplot(sed_mu_sd, aes(x = sigma, y = mu, color = period)) +
+  scale_color_manual(values = c("cadetblue", "gold"))+
+  geom_point() +
+  geom_text(aes(label = YEAR),
+            nudge_y = 0.03, size = 4)+
+  theme_bw()+
+  ylab("Optimum (μ)")+
+  xlab("Breadth (σ)")+
+  theme(legend.position = "none",
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12))
+
+ggsave("./Figures/sed_musigma.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pp, mapping = aes(SED_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_sed, mapping = aes(SED_SCALED, est_resp, color = period, group = YEAR), size = 1)+
   theme_bw()+
-  ggtitle("Sediment")+
-  ylab("CPUE")+
-  scale_color_viridis_d()
+  ylab("Hybrid CPUE")+
+  #ggtitle("Depth")+
+  xlab("Sediment scaled")+
+  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+ggsave("./Figures/sed_predcurves.png", width = 7, height = 5)
 
 # ICE
 pred_ice <- make_tv_effect_quad(
@@ -267,7 +463,7 @@ h <- 0.1
 
 # for each year, compute derivative of log-mean at ICE_SCALED = 0
 ice_slopes <- pred_ice %>%
-  group_by(YEAR) %>%
+  group_by(YEAR, period) %>%
   summarise(
     # nearest points to -h, 0, +h
     ice_minus = ICE_SCALED[which.min(abs(ICE_SCALED + h))],
@@ -276,41 +472,44 @@ ice_slopes <- pred_ice %>%
     eta_minus = est[which.min(abs(ICE_SCALED + h))],
     eta_zero  = est[which.min(abs(ICE_SCALED))],
     eta_plus  = est[which.min(abs(ICE_SCALED - h))],
-    slope_link = (eta_plus - eta_minus) / (ice_plus - ice_minus)
-  )
+    slope = (eta_plus - eta_minus) / (ice_plus - ice_minus)
+  ) %>%
+  full_join(., expand.grid(YEAR = seq(min(.$YEAR), max(.$YEAR)), period = unique(.$period)))
 
-ice_slopes <- ice_slopes %>%
-  mutate(period = case_when(
-    YEAR < 2018        ~ "pre-heatwave",
-    YEAR %in% 2018:2019 ~ "heatwave",
-    YEAR >= 2020        ~ "post-heatwave"))
+niche_slope_test(ice_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
 
-ggplot(ice_slopes, aes(x = YEAR, y = slope_link, colour = period)) +
+ggplot(ice_slopes, aes(x = YEAR, y = slope, colour = period)) +
   geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_line() +
-  geom_point() +
-  ggtitle("Ice")+
+  geom_line(linewidth = 0.75) +
+  geom_point(size = 2) +
+  #ggtitle("Ice")+
   ylab("slope")+
-  theme_bw()
+  xlab("Year")+
+  theme_bw()+
+  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
 
-pp <- pred_ice %>%
-  mutate(period = case_when(
-    YEAR < 2018        ~ "pre-heatwave",
-    YEAR %in% 2018:2019 ~ "heatwave",
-    YEAR >= 2020        ~ "post-heatwave"))
-
+ggsave("./Figures/ice_slope.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pp, mapping = aes(ICE_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color = period, group = YEAR), size = 1)+
   theme_bw()+
-  ylab("CPUE")+
-  ggtitle("Ice")+
-  scale_color_viridis_d()
+  ylab("Hybrid CPUE")+
+  #ggtitle("Depth")+
+  xlab("Ice scaled")+
+  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
 
-ggplot() +
-  geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color = YEAR, group = YEAR), size = 1)+
-  theme_bw()+
-  scale_color_viridis_c()
+ggsave("./Figures/ice_predcurves.png", width = 7, height = 5)
+
 
 # BTEMP
 pred_bt <- make_tv_effect_quad(
@@ -324,7 +523,7 @@ pred_bt <- make_tv_effect_quad(
 
 # 1. Compute slope of log-mean vs BTEMP_SCALED at BTEMP ≈ 0 for each year
 btemp_slopes <- pred_bt %>%
-  group_by(YEAR) %>%
+  group_by(YEAR, period) %>%
   summarise(
     # nearest points to -h, 0, +h
     btemp_minus = BTEMP_SCALED[which.min(abs(BTEMP_SCALED + h))],
@@ -333,57 +532,79 @@ btemp_slopes <- pred_bt %>%
     eta_minus   = est[which.min(abs(BTEMP_SCALED + h))],
     eta_zero    = est[which.min(abs(BTEMP_SCALED))],
     eta_plus    = est[which.min(abs(BTEMP_SCALED - h))],
-    slope_link  = (eta_plus - eta_minus) / (btemp_plus - btemp_minus)
-  )
+    slope  = (eta_plus - eta_minus) / (btemp_plus - btemp_minus)
+  ) %>%
+  full_join(., expand.grid(YEAR = seq(min(.$YEAR), max(.$YEAR)), period = unique(.$period)))
 
-# 2. Add period labels (same breaks you used for ice)
-btemp_slopes <- btemp_slopes %>%
-  mutate(period = case_when(
-    YEAR < 2018        ~ "pre-heatwave",
-    YEAR %in% 2018:2019 ~ "heatwave",
-    YEAR >= 2020        ~ "post-heatwave"))
+niche_slope_test(btemp_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
 
-# 3. Plot slope vs year
-ggplot(btemp_slopes, aes(x = YEAR, y = slope_link, colour = period)) +
+ggplot(btemp_slopes, aes(x = YEAR, y = slope, colour = period)) +
   geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_line() +
+  geom_line(linewidth = 0.75) +
+  geom_point(size = 2) +
+  #ggtitle("Ice")+
   ylab("slope")+
-  ggtitle("Bottom temperature")+
-  geom_point() +
-  theme_bw()
+  xlab("Year")+
+  theme_bw()+
+  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
 
-pp <- pred_bt %>%
-  mutate(period = case_when(
-    YEAR < 2018        ~ "pre-heatwave",
-    YEAR %in% 2018:2019 ~ "heatwave",
-    YEAR >= 2020        ~ "post-heatwave"))
-
+ggsave("./Figures/bt_slope.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pp, mapping = aes(BTEMP_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_bt, mapping = aes(BTEMP_SCALED, est_resp, color = period, group = YEAR), size = 1)+
   theme_bw()+
-  ylab("CPUE")+
-  ggtitle("Bottom temperature")+
-  scale_color_viridis_d()
+  ylab("Hybrid CPUE")+
+  #ggtitle("Depth")+
+  xlab("Bottom temperature scaled")+
+  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
 
-ggplot() +
-  geom_line(pp, mapping = aes(BTEMP_SCALED, est_resp, color = YEAR, group = YEAR), size = 1)+
-  theme_bw()+
-  scale_color_viridis_c()
-
-
-
-
-
+ggsave("./Figures/bt_predcurves.png", width = 7, height = 5)
 
 
+# Calculate diemsnion
+niche_year <- depth_mu_sd %>%              # YEAR, mu, sigma
+  rename(mu_depth = mu, sd_depth = sigma) %>%
+  left_join(sed_mu_sd  %>% rename(mu_sed = mu, sd_sed = sigma),
+            by = c("YEAR", "period")) %>%
+  left_join(ice_slopes  %>% dplyr::select(YEAR, period, slope) %>% rename(slope_ice = slope),
+            by = c("YEAR", "period")) %>%
+  left_join(btemp_slopes %>% dplyr::select(YEAR, period, slope) %>% rename(slope_bt = slope),
+            by = c("YEAR", "period"))
 
 
+niche_mat <- niche_year %>%
+  dplyr::select(mu_depth, sd_depth,
+         mu_sed,   sd_sed,
+         slope_ice, slope_bt) %>%
+  scale()
+
+pca <- prcomp(niche_mat, center = TRUE, scale. = TRUE)
+scores2 <- as.data.frame(pca$x) %>%
+  bind_cols(niche_year %>% dplyr::select(YEAR, period))
 
 
+library(vegan)
+
+adonis2(niche_mat ~ period, data = niche_year,
+        permutations = 999, method = "euclidean")
 
 
-
+ggplot(scores2, aes(x = PC1, y = PC2,
+                   colour = period, label = YEAR)) +
+  geom_point(size = 2) +
+  geom_text(vjust = -0.5, size = 3) +
+  theme_minimal() +
+  labs(x = "PC1", y = "PC2", colour = "Period")
 
 
 # FIT MODELS WITHOUT COVARIATES ----
