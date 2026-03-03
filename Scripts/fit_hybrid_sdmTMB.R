@@ -39,7 +39,7 @@ mod.dat <- st_join(mod.dat, sed.sf, join = st_nearest_feature) %>%
             rename(sed = X3.pred)
 
 # Add ice by year
-ice <- read.csv("./Output/spatial_ice_means_1980-2025.csv") %>%
+ice <- read.csv("./Output/spatial_ice_means_1980-20251.csv") %>%
   group_by(year, latitude, longitude) %>%
   summarise(value = mean(value), .groups = "drop") %>%
   st_as_sf(coords = c("longitude", "latitude"),
@@ -90,7 +90,11 @@ mod.df2 <- hybrid_data$haul %>%
             filter(is.finite(DEPTH_SCALED),
                    is.finite(BTEMP_SCALED),
                    is.finite(ICE_SCALED),
-                   is.finite(SED_SCALED))
+                   is.finite(SED_SCALED)) %>%
+            mutate(
+              DEPTH_SCALED2 = DEPTH_SCALED^2,
+              SED_SCALED2   = SED_SCALED^2
+            )
           
 
 # Plot
@@ -125,36 +129,45 @@ mesh <- make_mesh(mod.df2, c("LONGITUDE","LATITUDE"), n_knots = 90, type = "kmea
 
 # Fit model
 mod <- sdmTMB(
-        CPUE ~ 0 + s(DEPTH_SCALED, k=4) + s(BTEMP_SCALED, k=4) + s(ICE_SCALED, k=4) + s(SED_SCALED, k=4),
-        time_varying = ~ 0 + DEPTH_SCALED + ICE_SCALED + BTEMP_SCALED + SED_SCALED,
-        time_varying_type = "ar1",           # or "ar1"
-        mesh = mesh,
-        extra_time = c(2020),
-        family = tweedie(link = "log"),
-        time = "YEAR",
-        spatial = "on",
-        data = mod.df2,
-        silent = FALSE
-      )
+          CPUE ~ 1 +
+            DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
+            SED_SCALED   + SED_SCALED2 +        # unimodal sediment
+            BTEMP_SCALED +                      # baseline linear temp
+            ICE_SCALED,                         # baseline linear ice
+          time_varying = ~ 1 +
+            DEPTH_SCALED + DEPTH_SCALED2 +      # depth niche shifts through time
+            SED_SCALED   + SED_SCALED2 +        # sediment niche shifts
+            BTEMP_SCALED +                      # temp effect can change by year
+            ICE_SCALED,                         # ice effect can change by year
+          time_varying_type = "ar1",
+          mesh      = mesh,
+          extra_time = 2020,
+          family    = tweedie(link = "log"),
+          time      = "YEAR",
+          spatial   = "on",
+          data      = mod.df2,
+          silent    = FALSE
+        )
 
 # Diagnostics
 sanity(mod)
 
-# Plot effects
+# covariate means (for non-focal covariates)
 cov_means <- mod.df2 %>%
   summarise(
     DEPTH_SCALED = mean(DEPTH_SCALED, na.rm = TRUE),
+    SED_SCALED   = mean(SED_SCALED,   na.rm = TRUE),
     BTEMP_SCALED = mean(BTEMP_SCALED, na.rm = TRUE),
-    ICE_SCALED   = mean(ICE_SCALED,   na.rm = TRUE),
-    SED_SCALED   = mean(SED_SCALED,   na.rm = TRUE)
+    ICE_SCALED   = mean(ICE_SCALED,   na.rm = TRUE)
   )
 
-years_use <- sort(unique(mod.df2$YEAR))
+years_use <- 1990:2025
 
-
-make_tv_effect <- function(mod, data, focal, n,
-                           years,
-                           cov_means) {
+make_tv_effect_quad <- function(mod, data,
+                                focal,          # "DEPTH_SCALED" or "SED_SCALED"
+                                n,
+                                years,
+                                cov_means) {
   
   rng <- range(data[[focal]], na.rm = TRUE)
   x   <- seq(rng[1], rng[2], length.out = n)
@@ -166,37 +179,36 @@ make_tv_effect <- function(mod, data, focal, n,
     as_tibble() |>
     mutate(
       DEPTH_SCALED = cov_means$DEPTH_SCALED,
+      SED_SCALED   = cov_means$SED_SCALED,
       BTEMP_SCALED = cov_means$BTEMP_SCALED,
-      ICE_SCALED   = cov_means$ICE_SCALED,
-      SED_SCALED   = cov_means$SED_SCALED
+      ICE_SCALED   = cov_means$ICE_SCALED
     ) |>
     mutate(!!focal := focal_val, .keep = "unused")
   
-  # predictions on link scale
+  # ALWAYS create both quadratic cols expected by the model
+  nd$DEPTH_SCALED2 <- nd$DEPTH_SCALED^2
+  nd$SED_SCALED2   <- nd$SED_SCALED^2
+  
   pred_raw <- predict(
     mod,
     newdata = nd,
     re_form = ~ 0,
-    type    = "link",   # IMPORTANT: link scale
+    type    = "link",
     se_fit  = TRUE
   )
   
-  # keep only prediction columns
-  pred <- pred_raw |>
-    dplyr::select(est, est_se)
-  
-  out <- bind_cols(nd, pred)
-  
-  # back-transform Tweedie/log link to response scale
-  out <- out |>
-    mutate(
-      est_resp = exp(est))
+  out <- bind_cols(
+    nd,
+    dplyr::select(pred_raw, est, est_se)
+  ) |>
+    mutate(est_resp = exp(est))
   
   out
 }
 
-# call function (no duplicate-column messages now)
-pred_depth <- make_tv_effect(
+
+# Depth
+pred_depth <- make_tv_effect_quad(
   mod,
   data      = mod.df2,
   focal     = "DEPTH_SCALED",
@@ -204,13 +216,174 @@ pred_depth <- make_tv_effect(
   years     = years_use,
   cov_means = cov_means
 )
-options(bitmapType = "cairo") 
+
+pp <- pred_depth %>%
+          mutate(period = case_when(
+            YEAR < 2018        ~ "pre-heatwave",
+            YEAR %in% 2018:2019 ~ "heatwave",
+            YEAR >= 2020        ~ "post-heatwave"))
+
 ggplot() +
-  geom_line(pred_depth, mapping = aes(DEPTH_SCALED, est_resp, color = YEAR, group = YEAR), size = 1)+
+  geom_line(pp, mapping = aes(DEPTH_SCALED, est_resp, color = period, group = YEAR), size = 1)+
   theme_bw()+
-  scale_color_viridis_c()+
-  geom_ribbon(pred_depth, mapping = aes(DEPTH_SCALED, ymin = est_resp - est_se,
-                                        ymax = est_resp + est_se, fill = YEAR), alpha = 0.5)
+  ylab("CPUE")+
+  ggtitle("Depth")+
+  scale_color_viridis_d()
+
+# Sediment
+pred_sed <- make_tv_effect_quad(
+  mod,
+  data      = mod.df2,
+  focal     = "SED_SCALED",
+  n         = 100,
+  years     = years_use,
+  cov_means = cov_means
+)
+pp <- pred_sed %>%
+  mutate(period = case_when(
+      YEAR < 2018        ~ "pre-heatwave",
+      YEAR %in% 2018:2019 ~ "heatwave",
+      YEAR >= 2020        ~ "post-heatwave"))
+
+ggplot() +
+  geom_line(pp, mapping = aes(SED_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  theme_bw()+
+  ggtitle("Sediment")+
+  ylab("CPUE")+
+  scale_color_viridis_d()
+
+# ICE
+pred_ice <- make_tv_effect_quad(
+  mod,
+  data      = mod.df2,
+  focal     = "ICE_SCALED",
+  n         = 100,
+  years     = years_use,
+  cov_means = cov_means
+)
+
+# choose a small step for numerical derivative
+h <- 0.1
+
+# for each year, compute derivative of log-mean at ICE_SCALED = 0
+ice_slopes <- pred_ice %>%
+  group_by(YEAR) %>%
+  summarise(
+    # nearest points to -h, 0, +h
+    ice_minus = ICE_SCALED[which.min(abs(ICE_SCALED + h))],
+    ice_zero  = ICE_SCALED[which.min(abs(ICE_SCALED))],
+    ice_plus  = ICE_SCALED[which.min(abs(ICE_SCALED - h))],
+    eta_minus = est[which.min(abs(ICE_SCALED + h))],
+    eta_zero  = est[which.min(abs(ICE_SCALED))],
+    eta_plus  = est[which.min(abs(ICE_SCALED - h))],
+    slope_link = (eta_plus - eta_minus) / (ice_plus - ice_minus)
+  )
+
+ice_slopes <- ice_slopes %>%
+  mutate(period = case_when(
+    YEAR < 2018        ~ "pre-heatwave",
+    YEAR %in% 2018:2019 ~ "heatwave",
+    YEAR >= 2020        ~ "post-heatwave"))
+
+ggplot(ice_slopes, aes(x = YEAR, y = slope_link, colour = period)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line() +
+  geom_point() +
+  ggtitle("Ice")+
+  ylab("slope")+
+  theme_bw()
+
+pp <- pred_ice %>%
+  mutate(period = case_when(
+    YEAR < 2018        ~ "pre-heatwave",
+    YEAR %in% 2018:2019 ~ "heatwave",
+    YEAR >= 2020        ~ "post-heatwave"))
+
+
+ggplot() +
+  geom_line(pp, mapping = aes(ICE_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  theme_bw()+
+  ylab("CPUE")+
+  ggtitle("Ice")+
+  scale_color_viridis_d()
+
+ggplot() +
+  geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color = YEAR, group = YEAR), size = 1)+
+  theme_bw()+
+  scale_color_viridis_c()
+
+# BTEMP
+pred_bt <- make_tv_effect_quad(
+  mod,
+  data      = mod.df2,
+  focal     = "BTEMP_SCALED",
+  n         = 100,
+  years     = years_use,
+  cov_means = cov_means
+)
+
+# 1. Compute slope of log-mean vs BTEMP_SCALED at BTEMP ≈ 0 for each year
+btemp_slopes <- pred_bt %>%
+  group_by(YEAR) %>%
+  summarise(
+    # nearest points to -h, 0, +h
+    btemp_minus = BTEMP_SCALED[which.min(abs(BTEMP_SCALED + h))],
+    btemp_zero  = BTEMP_SCALED[which.min(abs(BTEMP_SCALED))],
+    btemp_plus  = BTEMP_SCALED[which.min(abs(BTEMP_SCALED - h))],
+    eta_minus   = est[which.min(abs(BTEMP_SCALED + h))],
+    eta_zero    = est[which.min(abs(BTEMP_SCALED))],
+    eta_plus    = est[which.min(abs(BTEMP_SCALED - h))],
+    slope_link  = (eta_plus - eta_minus) / (btemp_plus - btemp_minus)
+  )
+
+# 2. Add period labels (same breaks you used for ice)
+btemp_slopes <- btemp_slopes %>%
+  mutate(period = case_when(
+    YEAR < 2018        ~ "pre-heatwave",
+    YEAR %in% 2018:2019 ~ "heatwave",
+    YEAR >= 2020        ~ "post-heatwave"))
+
+# 3. Plot slope vs year
+ggplot(btemp_slopes, aes(x = YEAR, y = slope_link, colour = period)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line() +
+  ylab("slope")+
+  ggtitle("Bottom temperature")+
+  geom_point() +
+  theme_bw()
+
+pp <- pred_bt %>%
+  mutate(period = case_when(
+    YEAR < 2018        ~ "pre-heatwave",
+    YEAR %in% 2018:2019 ~ "heatwave",
+    YEAR >= 2020        ~ "post-heatwave"))
+
+
+ggplot() +
+  geom_line(pp, mapping = aes(BTEMP_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  theme_bw()+
+  ylab("CPUE")+
+  ggtitle("Bottom temperature")+
+  scale_color_viridis_d()
+
+ggplot() +
+  geom_line(pp, mapping = aes(BTEMP_SCALED, est_resp, color = YEAR, group = YEAR), size = 1)+
+  theme_bw()+
+  scale_color_viridis_c()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # FIT MODELS WITHOUT COVARIATES ----
