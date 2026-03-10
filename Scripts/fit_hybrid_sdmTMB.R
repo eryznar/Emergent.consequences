@@ -224,7 +224,7 @@ ggplot(depth_mu_sd, aes(x = sigma, y = mu, color = period)) +
         axis.text = element_text(size = 12),
         axis.title = element_text(size = 12))
 
-ggsave("./Figures/depth_musigma.png", width = 7, height = 5)
+ggsave("./Figures/hybrid_depth_musigma.png", width = 7, height = 5)
   
 
 ggplot() +
@@ -240,7 +240,7 @@ ggplot() +
         legend.position = "bottom",
         legend.direction = "horizontal")
 
-ggsave("./Figures/depth_predcurves.png", width = 7, height = 5)
+ggsave("./Figures/hybrid_depth_predcurves.png", width = 7, height = 5)
 
 
 # Sediment
@@ -277,7 +277,7 @@ ggplot(sed_mu_sd, aes(x = sigma, y = mu, color = period)) +
         axis.text = element_text(size = 12),
         axis.title = element_text(size = 12))
 
-ggsave("./Figures/sed_musigma.png", width = 7, height = 5)
+ggsave("./Figures/hybrid_sed_musigma.png", width = 7, height = 5)
 
 ggplot() +
   geom_line(pred_sed, mapping = aes(SED_SCALED, est_resp, color = period, group = YEAR), size = 1)+
@@ -292,7 +292,7 @@ ggplot() +
         legend.position = "bottom",
         legend.direction = "horizontal")
 
-ggsave("./Figures/sed_predcurves.png", width = 7, height = 5)
+ggsave("./Figures/hybrid_sed_predcurves.png", width = 7, height = 5)
 
 # ICE
 pred_ice <- make_tv_effect_quad(
@@ -339,7 +339,7 @@ ggplot(ice_slopes, aes(x = YEAR, y = slope, colour = period)) +
         legend.position = "bottom",
         legend.direction = "horizontal")
 
-ggsave("./Figures/ice_slope.png", width = 7, height = 5)
+ggsave("./Figures/hybrid_ice_slope.png", width = 7, height = 5)
 
 ggplot() +
   geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color = period, group = YEAR), size = 1)+
@@ -354,7 +354,7 @@ ggplot() +
         legend.position = "bottom",
         legend.direction = "horizontal")
 
-ggsave("./Figures/ice_predcurves.png", width = 7, height = 5)
+ggsave("./Figures/hybrid_ice_predcurves.png", width = 7, height = 5)
 
 
 # BTEMP
@@ -399,7 +399,7 @@ ggplot(btemp_slopes, aes(x = YEAR, y = slope, colour = period)) +
         legend.position = "bottom",
         legend.direction = "horizontal")
 
-ggsave("./Figures/bt_slope.png", width = 7, height = 5)
+ggsave("./Figures/hybrid_bt_slope.png", width = 7, height = 5)
 
 ggplot() +
   geom_line(pred_bt, mapping = aes(BTEMP_SCALED, est_resp, color = period, group = YEAR), size = 1)+
@@ -414,5 +414,5 @@ ggplot() +
         legend.position = "bottom",
         legend.direction = "horizontal")
 
-ggsave("./Figures/bt_predcurves.png", width = 7, height = 5)
+ggsave("./Figures/hybrid_bt_predcurves.png", width = 7, height = 5)
 
