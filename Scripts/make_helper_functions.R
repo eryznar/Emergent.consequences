@@ -1,48 +1,54 @@
 
 # Helper functions
 make_tv_effect_quad <- function(mod, data,
-                                focal,          # "DEPTH_SCALED" or "SED_SCALED"
+                                focal,
                                 n,
                                 years,
                                 cov_means) {
   
-  rng <- range(data[[focal]], na.rm = TRUE)
-  x   <- seq(rng[1], rng[2], length.out = n)
-  
-  nd <- expand.grid(
-    focal_val = x,
-    YEAR      = years
-  ) |>
-    as_tibble() |>
-    mutate(
-      DEPTH_SCALED = cov_means$DEPTH_SCALED,
-      SED_SCALED   = cov_means$SED_SCALED,
-      BTEMP_SCALED = cov_means$BTEMP_SCALED,
-      ICE_SCALED   = cov_means$ICE_SCALED
-    ) |>
-    mutate(!!focal := focal_val, .keep = "unused")
-  
-  # ALWAYS create both quadratic cols expected by the model
-  nd$DEPTH_SCALED2 <- nd$DEPTH_SCALED^2
-  nd$SED_SCALED2   <- nd$SED_SCALED^2
-  
-  pred_raw <- predict(
-    mod,
-    newdata = nd,
-    re_form = ~ 0,
-    type    = "link",
-    se_fit  = TRUE
+  purrr::map_dfr(
+    years,
+    ~{
+      yr <- .x
+      
+      # year‑specific focal range
+      rng <- range(data[[focal]][data$YEAR == yr], na.rm = TRUE)
+      x   <- seq(rng[1], rng[2], length.out = n)
+      
+      # grab the row of cov_means for this year
+      cm <- cov_means[cov_means$YEAR == yr, ]
+      
+      nd <- tibble(
+        focal_val    = x,
+        YEAR         = yr,
+        DEPTH_SCALED = cm$DEPTH_SCALED,   # length 1, recycled to n
+        SED_SCALED   = cm$SED_SCALED,
+        BTEMP_SCALED = cm$BTEMP_SCALED,
+        ICE_SCALED   = cm$ICE_SCALED
+      ) |>
+        mutate(!!focal := focal_val, .keep = "unused")
+      
+      nd$DEPTH_SCALED2 <- nd$DEPTH_SCALED^2
+      nd$SED_SCALED2   <- nd$SED_SCALED^2
+      
+      pred_raw <- predict(
+        mod,
+        newdata = nd,
+        re_form = ~ 0,
+        type    = "link",
+        se_fit  = TRUE
+      )
+      
+      bind_cols(
+        nd,
+        dplyr::select(pred_raw, est, est_se)
+      ) |>
+        mutate(
+          est_resp = exp(est),
+          period   = if_else(YEAR %in% 2024:2025, "2024:2025", "<2024")
+        )
+    }
   )
-  
-  out <- bind_cols(
-    nd,
-    dplyr::select(pred_raw, est, est_se)
-  ) |>
-    mutate(est_resp = exp(est),
-           period = case_when(YEAR %in% 2024:2025 ~ "2024:2025",
-                              TRUE ~ "<2024"))
-  
-  out
 }
 
 get_mu_sigma <- function(x, w) {
