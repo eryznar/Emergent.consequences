@@ -39,7 +39,7 @@ mod.dat <- st_join(mod.dat, sed.sf, join = st_nearest_feature) %>%
             rename(sed = X3.pred)
 
 # Add ice by year
-ice <- read.csv("./Output/spatial_ice_means_1980-20251.csv") %>%
+ice <- read.csv("./Output/spatial_ice_means_1980-2025.csv") %>%
   group_by(year, latitude, longitude) %>%
   summarise(value = mean(value), .groups = "drop") %>%
   st_as_sf(coords = c("longitude", "latitude"),

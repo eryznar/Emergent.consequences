@@ -83,7 +83,7 @@ ice.years <- 2014:2025
   # Scale, and compute Jan-Feb and Mar-Apr means
   ice.means %>%
     group_by(month) %>%
-    mutate(value = scale(value),
+    mutate(value = value,
            name = case_when((month %in% 1:2) ~ "Jan-Feb ice",
                             TRUE ~ "Mar-Apr ice")) %>%
     ungroup() %>%
@@ -93,7 +93,7 @@ ice.years <- 2014:2025
   # Scale, and compute Jan-Feb and Mar-Apr means
   ice.spatial %>%
     group_by(month, latitude, longitude) %>%
-    mutate(value = scale(value),
+    mutate(value = value,
            name = case_when((month %in% 1:2) ~ "Jan-Feb ice",
                             TRUE ~ "Mar-Apr ice")) %>%
     ungroup() %>%
