@@ -4,18 +4,16 @@ source("./Scripts/make_helper_functions.R")
 snow_data <- readRDS("./Data/snow_specimen.rda")
 
 
-spec2 <- snow_data$specimen %>%
-  filter(SEX == 1 & SIZE >=95 | SEX == 2 & CLUTCH_SIZE>0) # large males and mature females (mating pairs for snow)
-
+spec2 <- snow_data$specimen 
 snow_data$specimen <- spec2
-
 
 # Calculate per-station CPUE by 1mm size bin
 snow_cpue <- crabpack::calc_cpue(crab_data = snow_data,
                                    species = "SNOW",
                                    region = "EBS",
-                                   size_min = NULL,
+                                   size_min = 50,
                                    size_max = NULL)
+                                   #shell_condition = c("soft_molting", "new_hardshell"))
 
 
 # transform model dat to sf
@@ -40,6 +38,7 @@ mod.dat <- st_join(mod.dat, sed.sf, join = st_nearest_feature) %>%
 
 # Add ice by year
 ice <- read.csv("./Output/spatial_ice_means_1980-2025.csv") %>%
+  filter(name == "Mar-Apr ice") %>%
   group_by(year, latitude, longitude) %>%
   summarise(value = mean(value), .groups = "drop") %>%
   st_as_sf(coords = c("longitude", "latitude"),
@@ -97,55 +96,55 @@ mod.df2 <- snow_data$haul %>%
   )
 
 
-# Plot
-ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = ICE)) +
-  geom_tile(width = 45, height = 45) +
-  theme_bw() +
-  facet_wrap(~YEAR) +
-  scale_fill_viridis_c()
-
-ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = SED)) +
-  geom_tile(width = 45, height = 45) +
-  theme_bw() +
-  facet_wrap(~YEAR) +
-  scale_fill_viridis_c()
-
-ggplot(mod.df2 %>%filter(YEAR %in% 1988:1994), aes(LONGITUDE, LATITUDE, fill = DEPTH)) +
-  geom_tile(width = 45, height = 45) +
-  theme_bw() +
-  facet_wrap(~YEAR) +
-  scale_fill_viridis_c()
-
-ggplot(mod.df2 %>% filter(YEAR %in% 1988:1994), aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
-  geom_tile(width = 45, height = 45) +
-  theme_bw() +
-  facet_wrap(~YEAR) +
-  scale_fill_viridis_c()
-
-ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = BTEMP)) +
-  geom_tile(width = 45, height = 45) +
-  theme_bw() +
-  facet_wrap(~YEAR) +
-  scale_fill_viridis_c()
-
-
-cor_dat <- mod.df2 %>%
-  dplyr::select(where(is.numeric)) %>%
-  dplyr::select(ICE_SCALED, DEPTH_SCALED, BTEMP_SCALED, SED_SCALED)
-
-# compute correlation matrix
-cor_mat <- cor(cor_dat, use = "pairwise.complete.obs")
-
-# plot
-corrplot::corrplot(
-  cor_mat,
-  method      = "color",
-  type        = "upper",
-  tl.col      = "black",
-  tl.srt      = 45,
-  addCoef.col = "black",   # show correlation values
-  number.cex  = 0.7        # adjust as needed
-)
+# # Plot
+# ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = ICE)) +
+#   geom_tile(width = 45, height = 45) +
+#   theme_bw() +
+#   facet_wrap(~YEAR) +
+#   scale_fill_viridis_c()
+# 
+# ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = SED)) +
+#   geom_tile(width = 45, height = 45) +
+#   theme_bw() +
+#   facet_wrap(~YEAR) +
+#   scale_fill_viridis_c()
+# 
+# ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = DEPTH)) +
+#   geom_tile(width = 45, height = 45) +
+#   theme_bw() +
+#   facet_wrap(~YEAR) +
+#   scale_fill_viridis_c()
+# 
+# ggplot(mod.df2%>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
+#   geom_tile(width = 45, height = 45) +
+#   theme_bw() +
+#   facet_wrap(~YEAR) +
+#   scale_fill_viridis_c()
+# 
+# ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = BTEMP)) +
+#   geom_tile(width = 45, height = 45) +
+#   theme_bw() +
+#   facet_wrap(~YEAR) +
+#   scale_fill_viridis_c()
+# 
+# 
+# cor_dat <- mod.df2 %>%
+#   dplyr::select(where(is.numeric)) %>%
+#   dplyr::select(ICE_SCALED, DEPTH_SCALED, BTEMP_SCALED, SED_SCALED)
+# 
+# # compute correlation matrix
+# cor_mat <- cor(cor_dat, use = "pairwise.complete.obs")
+# 
+# # plot
+# corrplot::corrplot(
+#   cor_mat,
+#   method      = "color",
+#   type        = "upper",
+#   tl.col      = "black",
+#   tl.srt      = 45,
+#   addCoef.col = "black",   # show correlation values
+#   number.cex  = 0.7        # adjust as needed
+# )
 
 # FIT MODELS WITH COVARIATEES ----
 # Build mesh
@@ -173,6 +172,7 @@ mod <- sdmTMB(
   silent    = FALSE
 )
 
+
 saveRDS(mod, "./Models/snow_sdmTMB_tw_90.rda")
 
 # Diagnostics
@@ -181,7 +181,6 @@ sanity(mod)
 
 # covariate means (for non-focal covariates)
 cov_means <- mod.df2 %>%
-  group_by(YEAR) %>%
   summarise(
     DEPTH_SCALED = mean(DEPTH_SCALED, na.rm = TRUE),
     SED_SCALED   = mean(SED_SCALED,   na.rm = TRUE),
@@ -190,7 +189,7 @@ cov_means <- mod.df2 %>%
   )
 
 # Focal years
-years_use <- c(1990:2019, 2021:2025)
+years_use <- c(1988:2019, 2021:2025)
 
 # Depth
 pred_depth <- make_tv_effect_quad(
@@ -205,16 +204,21 @@ pred_depth <- make_tv_effect_quad(
 depth_mu_sd <- pred_depth %>%
   group_by(YEAR) %>%
   reframe(get_mu_sigma(DEPTH_SCALED, est_resp)) %>%
-  mutate(period = case_when(YEAR %in% 2024:2025 ~ "2024:2025",
-                            TRUE ~ "<2024"))
+  mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                            (YEAR %in% 2018:2019) ~ "Heatwave",
+                            TRUE ~ "Post-heatwave"))
 
 niche_n_mu_sigma_test(pred_depth,
                       focal = c("DEPTH_SCALED"),
                       break_year = 2024,
                       nperm = 999)
 
-ggplot(depth_mu_sd %>% filter(YEAR > 1991), aes(x = sigma, y = mu, color = period)) +
-  scale_color_manual(values = c("cadetblue", "gold"))+
+ggplot(depth_mu_sd, aes(x = sigma, y = mu, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   geom_point(size = 2) +
   geom_text(aes(label = YEAR),
             nudge_y = 0.03, size = 4)+
@@ -230,12 +234,16 @@ ggsave("./Figures/snow_depth_musigma.png", width = 7, height = 5)
 
 
 ggplot() +
-  geom_line(pred_depth %>% filter(YEAR > 1991), mapping = aes(DEPTH_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_depth, mapping = aes(DEPTH_SCALED, est_resp, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
   theme_bw()+
-  ylab("Snow CPUE")+
+  ylab("snow CPUE")+
   #ggtitle("Depth")+
   xlab("Depth scaled")+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -264,11 +272,16 @@ niche_n_mu_sigma_test(pred_sed,
 sed_mu_sd <- pred_sed %>%
   group_by(YEAR) %>%
   reframe(get_mu_sigma(SED_SCALED, est_resp)) %>%
-  mutate(period = case_when(YEAR %in% 2024:2025 ~ "2024:2025",
-                            TRUE ~ "<2024"))
+  mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                            (YEAR %in% 2018:2019) ~ "Heatwave",
+                            TRUE ~ "Post-heatwave"))
 
-ggplot(sed_mu_sd, aes(x = sigma, y = mu, color = period)) +
-  scale_color_manual(values = c("cadetblue", "gold"))+
+ggplot(sed_mu_sd, aes(x = sigma, y = mu, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   geom_point() +
   geom_text(aes(label = YEAR),
             nudge_y = 0.03, size = 4)+
@@ -282,12 +295,16 @@ ggplot(sed_mu_sd, aes(x = sigma, y = mu, color = period)) +
 ggsave("./Figures/snow_sed_musigma.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pred_sed, mapping = aes(SED_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_sed, mapping = aes(SED_SCALED, est_resp, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
   theme_bw()+
-  ylab("Snow CPUE")+
+  ylab("snow CPUE")+
   #ggtitle("Depth")+
   xlab("Sediment scaled")+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -306,6 +323,9 @@ pred_ice <- make_tv_effect_quad(
   cov_means = cov_means
 )
 
+pred_ice <- pred_ice %>% mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                                                   (YEAR %in% 2018:2019) ~ "Heatwave",
+                                                   TRUE ~ "Post-heatwave"))
 # choose a small step for numerical derivative
 h <- 0.1
 
@@ -326,16 +346,19 @@ ice_slopes <- pred_ice %>%
 
 niche_slope_test(ice_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
 
-ggplot(ice_slopes, aes(x = YEAR, y = slope, colour = period)) +
+ggplot(ice_slopes, aes(x = YEAR, y = slope, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   geom_line(linewidth = 0.75) +
   geom_point(size = 2) +
-  #ggtitle("Ice")+
-  ylab("slope")+
-  xlab("Year")+
-  theme_bw()+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
-  theme(axis.text = element_text(size = 12),
+  ylab("slope") +
+  xlab("Year") +
+  theme_bw() +
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
+  theme(axis.text  = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
         legend.position = "bottom",
@@ -344,12 +367,16 @@ ggplot(ice_slopes, aes(x = YEAR, y = slope, colour = period)) +
 ggsave("./Figures/snow_ice_slope.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color =factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
   theme_bw()+
-  ylab("Snow CPUE")+
+  ylab("snow CPUE")+
   #ggtitle("Depth")+
   xlab("Ice scaled")+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -386,7 +413,7 @@ btemp_slopes <- pred_bt %>%
 
 niche_slope_test(btemp_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
 
-ggplot(btemp_slopes, aes(x = YEAR, y = slope, colour = period)) +
+ggplot(btemp_slopes, aes(x = YEAR, y = slope, color =factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   geom_line(linewidth = 0.75) +
   geom_point(size = 2) +
@@ -394,7 +421,11 @@ ggplot(btemp_slopes, aes(x = YEAR, y = slope, colour = period)) +
   ylab("slope")+
   xlab("Year")+
   theme_bw()+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -404,12 +435,16 @@ ggplot(btemp_slopes, aes(x = YEAR, y = slope, colour = period)) +
 ggsave("./Figures/snow_bt_slope.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pred_bt, mapping = aes(BTEMP_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_bt, mapping = aes(BTEMP_SCALED, est_resp, color = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
   theme_bw()+
-  ylab("Snow CPUE")+
+  ylab("snow CPUE")+
   #ggtitle("Depth")+
   xlab("Bottom temperature scaled")+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -417,5 +452,4 @@ ggplot() +
         legend.direction = "horizontal")
 
 ggsave("./Figures/snow_bt_predcurves.png", width = 7, height = 5)
-
 
