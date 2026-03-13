@@ -2,13 +2,10 @@ source("./Scripts/load_libs_params.R")
 source("./Scripts/make_helper_functions.R")
 
 
-
 hybrid_data <- readRDS("./Data/hybrid_specimen.rda")
 
 
-spec2 <- hybrid_data$specimen %>%
-          filter(SIZE >=48 & SIZE <=103) # central 90% of abundance for hybrids in 2025 across sexes
-
+spec2 <- hybrid_data$specimen 
 hybrid_data$specimen <- spec2
 
 
@@ -16,16 +13,17 @@ hybrid_data$specimen <- spec2
 hybrid_cpue <- crabpack::calc_cpue(crab_data = hybrid_data,
                                    species = "HYBRID",
                                    region = "EBS",
-                                   size_min = NULL,
-                                   size_max = NULL)
+                                   size_min = 50,
+                                   size_max = NULL,
+                                   shell_condition = c("soft_molting", "new_hardshell"))
 
 
 # transform model dat to sf
 mod.dat <- hybrid_cpue %>%
-              group_by(YEAR, STATION_ID, LATITUDE, LONGITUDE) %>%
-              reframe(CPUE = sum(CPUE)) %>%
-              st_as_sf(., coords = c("LONGITUDE", "LATITUDE"), crs = "+proj=longlat +datum=WGS84") %>%
-              st_transform(., crs = "+proj=utm +zone=2")
+  group_by(YEAR, STATION_ID, LATITUDE, LONGITUDE) %>%
+  reframe(CPUE = sum(CPUE)) %>%
+  st_as_sf(., coords = c("LONGITUDE", "LATITUDE"), crs = "+proj=longlat +datum=WGS84") %>%
+  st_transform(., crs = "+proj=utm +zone=2")
 
 # Add sediment
 f <- "Y:/KOD_Survey/EBS Shelf/Spatial crab/Environmental layers/EBS_phi_1km.grd"
@@ -38,10 +36,11 @@ sed.sf <- sed.df %>%
   st_transform(crs = "+proj=utm +zone=2")
 
 mod.dat <- st_join(mod.dat, sed.sf, join = st_nearest_feature) %>%
-            rename(sed = X3.pred)
+  rename(sed = X3.pred)
 
 # Add ice by year
 ice <- read.csv("./Output/spatial_ice_means_1980-2025.csv") %>%
+  filter(name == "Mar-Apr ice") %>%
   group_by(year, latitude, longitude) %>%
   summarise(value = mean(value), .groups = "drop") %>%
   st_as_sf(coords = c("longitude", "latitude"),
@@ -66,38 +65,38 @@ for (y in sort(unique(mod.dat$YEAR))) {
 
 # Transform to data frame
 mod.df <- mod.dat %>%
-            cbind(st_coordinates(.)) %>%
-            as.data.frame(.) %>%
-            mutate(LONGITUDE = X/1000,
-                   LATITUDE = Y/1000) %>%
-            dplyr::select(!c(X, Y, geometry)) %>%
-            rename(SED = sed, ICE = ice)
+  cbind(st_coordinates(.)) %>%
+  as.data.frame(.) %>%
+  mutate(LONGITUDE = X/1000,
+         LATITUDE = Y/1000) %>%
+  dplyr::select(!c(X, Y, geometry)) %>%
+  rename(SED = sed, ICE = ice)
 
 # Add depth and bottom temp
 mod.df2 <- hybrid_data$haul %>%
-            dplyr::select(YEAR, STATION_ID, BOTTOM_DEPTH, GEAR_TEMPERATURE) %>%
-            right_join(mod.df, .) %>%
-            filter(YEAR >=1988) %>%
-            rename(DEPTH = BOTTOM_DEPTH, BTEMP = GEAR_TEMPERATURE) %>%
-            mutate(YEAR_F = as.factor(YEAR),
-                   YEAR_SCALED = scale(YEAR),
-                   ICE_SCALED = scale(ICE),
-                   DEPTH_SCALED = scale(DEPTH),
-                   BTEMP_SCALED = scale(BTEMP),
-                   SED_SCALED = scale(SED),
-                DEPTH_SCALED = as.numeric(DEPTH_SCALED),
-                BTEMP_SCALED = as.numeric(BTEMP_SCALED),
-                ICE_SCALED   = as.numeric(ICE_SCALED),
-                SED_SCALED   = as.numeric(SED_SCALED)) %>%
-            filter(is.finite(DEPTH_SCALED),
-                   is.finite(BTEMP_SCALED),
-                   is.finite(ICE_SCALED),
-                   is.finite(SED_SCALED)) %>%
-            mutate(
-              DEPTH_SCALED2 = DEPTH_SCALED^2,
-              SED_SCALED2   = SED_SCALED^2
-            )
-          
+  dplyr::select(YEAR, STATION_ID, BOTTOM_DEPTH, GEAR_TEMPERATURE) %>%
+  right_join(mod.df, .) %>%
+  filter(YEAR >=1988) %>%
+  rename(DEPTH = BOTTOM_DEPTH, BTEMP = GEAR_TEMPERATURE) %>%
+  mutate(YEAR_F = as.factor(YEAR),
+         YEAR_SCALED = scale(YEAR),
+         ICE_SCALED = scale(ICE),
+         DEPTH_SCALED = scale(DEPTH),
+         BTEMP_SCALED = scale(BTEMP),
+         SED_SCALED = scale(SED),
+         DEPTH_SCALED = as.numeric(DEPTH_SCALED),
+         BTEMP_SCALED = as.numeric(BTEMP_SCALED),
+         ICE_SCALED   = as.numeric(ICE_SCALED),
+         SED_SCALED   = as.numeric(SED_SCALED)) %>%
+  filter(is.finite(DEPTH_SCALED),
+         is.finite(BTEMP_SCALED),
+         is.finite(ICE_SCALED),
+         is.finite(SED_SCALED)) %>%
+  mutate(
+    DEPTH_SCALED2 = DEPTH_SCALED^2,
+    SED_SCALED2   = SED_SCALED^2
+  )
+
 
 # Plot
 ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = ICE)) +
@@ -155,28 +154,32 @@ mesh <- make_mesh(mod.df2, c("LONGITUDE","LATITUDE"), n_knots = 90, type = "kmea
 
 # Fit model
 mod <- sdmTMB(
-          CPUE ~ 1 +
-            DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
-            SED_SCALED   + SED_SCALED2 +        # unimodal sediment
-            BTEMP_SCALED +                      # baseline linear temp
-            ICE_SCALED,                         # baseline linear ice
-          time_varying = ~ 1 +
-            DEPTH_SCALED + DEPTH_SCALED2 +      # depth niche shifts through time
-            SED_SCALED   + SED_SCALED2 +        # sediment niche shifts
-            BTEMP_SCALED +                      # temp effect can change by year
-            ICE_SCALED,                         # ice effect can change by year
-          time_varying_type = "ar1",
-          mesh      = mesh,
-          extra_time = 2020,
-          family    = tweedie(link = "log"),
-          time      = "YEAR",
-          spatial   = "on",
-          data      = mod.df2,
-          silent    = FALSE
-        )
+  CPUE ~ 1 +
+    DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
+    SED_SCALED   + SED_SCALED2 +        # unimodal sediment
+    BTEMP_SCALED +                      # baseline linear temp
+    ICE_SCALED,                         # baseline linear ice
+  time_varying = ~ 1 +
+    DEPTH_SCALED + DEPTH_SCALED2 +      # depth niche shifts through time
+    SED_SCALED   + SED_SCALED2 +        # sediment niche shifts
+    BTEMP_SCALED +                      # temp effect can change by year
+    ICE_SCALED,                         # ice effect can change by year
+  time_varying_type = "ar1",
+  mesh      = mesh,
+  extra_time = 2020,
+  family    = tweedie(link = "log"),
+  time      = "YEAR",
+  spatial   = "on",
+  data      = mod.df2,
+  silent    = FALSE
+)
+
+
+ saveRDS(mod, "./Models/hybrid_sdmTMB_tw_90.rda")
 
 # Diagnostics
 sanity(mod)
+
 
 # covariate means (for non-focal covariates)
 cov_means <- mod.df2 %>%
@@ -188,7 +191,7 @@ cov_means <- mod.df2 %>%
   )
 
 # Focal years
-years_use <- c(1990:2019, 2021:2025)
+years_use <- c(1988:2019, 2021:2025)
 
 # Depth
 pred_depth <- make_tv_effect_quad(
@@ -203,16 +206,21 @@ pred_depth <- make_tv_effect_quad(
 depth_mu_sd <- pred_depth %>%
   group_by(YEAR) %>%
   reframe(get_mu_sigma(DEPTH_SCALED, est_resp)) %>%
-  mutate(period = case_when(YEAR %in% 2024:2025 ~ "2024:2025",
-                            TRUE ~ "<2024"))
+  mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                            (YEAR %in% 2018:2019) ~ "Heatwave",
+                            TRUE ~ "Post-heatwave"))
 
 niche_n_mu_sigma_test(pred_depth,
                       focal = c("DEPTH_SCALED"),
                       break_year = 2024,
                       nperm = 999)
 
-ggplot(depth_mu_sd, aes(x = sigma, y = mu, color = period)) +
-  scale_color_manual(values = c("cadetblue", "gold"))+
+ggplot(depth_mu_sd, aes(x = sigma, y = mu, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   geom_point(size = 2) +
   geom_text(aes(label = YEAR),
             nudge_y = 0.03, size = 4)+
@@ -228,12 +236,16 @@ ggsave("./Figures/hybrid_depth_musigma.png", width = 7, height = 5)
   
 
 ggplot() +
-  geom_line(pred_depth, mapping = aes(DEPTH_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_depth, mapping = aes(DEPTH_SCALED, est_resp, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
   theme_bw()+
   ylab("Hybrid CPUE")+
   #ggtitle("Depth")+
   xlab("Depth scaled")+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -262,11 +274,16 @@ niche_n_mu_sigma_test(pred_sed,
 sed_mu_sd <- pred_sed %>%
   group_by(YEAR) %>%
   reframe(get_mu_sigma(SED_SCALED, est_resp)) %>%
-  mutate(period = case_when(YEAR %in% 2024:2025 ~ "2024:2025",
-                            TRUE ~ "<2024"))
+  mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                            (YEAR %in% 2018:2019) ~ "Heatwave",
+                            TRUE ~ "Post-heatwave"))
 
-ggplot(sed_mu_sd, aes(x = sigma, y = mu, color = period)) +
-  scale_color_manual(values = c("cadetblue", "gold"))+
+ggplot(sed_mu_sd, aes(x = sigma, y = mu, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   geom_point() +
   geom_text(aes(label = YEAR),
             nudge_y = 0.03, size = 4)+
@@ -280,12 +297,16 @@ ggplot(sed_mu_sd, aes(x = sigma, y = mu, color = period)) +
 ggsave("./Figures/hybrid_sed_musigma.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pred_sed, mapping = aes(SED_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_sed, mapping = aes(SED_SCALED, est_resp, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
   theme_bw()+
   ylab("Hybrid CPUE")+
   #ggtitle("Depth")+
   xlab("Sediment scaled")+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -304,6 +325,9 @@ pred_ice <- make_tv_effect_quad(
   cov_means = cov_means
 )
 
+pred_ice <- pred_ice %>% mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                                                   (YEAR %in% 2018:2019) ~ "Heatwave",
+                                                   TRUE ~ "Post-heatwave"))
 # choose a small step for numerical derivative
 h <- 0.1
 
@@ -324,30 +348,37 @@ ice_slopes <- pred_ice %>%
 
 niche_slope_test(ice_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
 
-ggplot(ice_slopes, aes(x = YEAR, y = slope, colour = period)) +
+ggplot(ice_slopes, aes(x = YEAR, y = slope, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   geom_line(linewidth = 0.75) +
   geom_point(size = 2) +
-  #ggtitle("Ice")+
-  ylab("slope")+
-  xlab("Year")+
-  theme_bw()+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
-  theme(axis.text = element_text(size = 12),
-        axis.title = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom",
-        legend.direction = "horizontal")
+  ylab("slope") +
+  xlab("Year") +
+  theme_bw() +
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
+  theme(axis.text  = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.position = "bottom",
+    legend.direction = "horizontal")
 
 ggsave("./Figures/hybrid_ice_slope.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color =factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
   theme_bw()+
   ylab("Hybrid CPUE")+
   #ggtitle("Depth")+
   xlab("Ice scaled")+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -384,7 +415,7 @@ btemp_slopes <- pred_bt %>%
 
 niche_slope_test(btemp_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
 
-ggplot(btemp_slopes, aes(x = YEAR, y = slope, colour = period)) +
+ggplot(btemp_slopes, aes(x = YEAR, y = slope, color =factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   geom_line(linewidth = 0.75) +
   geom_point(size = 2) +
@@ -392,7 +423,11 @@ ggplot(btemp_slopes, aes(x = YEAR, y = slope, colour = period)) +
   ylab("slope")+
   xlab("Year")+
   theme_bw()+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -402,12 +437,16 @@ ggplot(btemp_slopes, aes(x = YEAR, y = slope, colour = period)) +
 ggsave("./Figures/hybrid_bt_slope.png", width = 7, height = 5)
 
 ggplot() +
-  geom_line(pred_bt, mapping = aes(BTEMP_SCALED, est_resp, color = period, group = YEAR), size = 1)+
+  geom_line(pred_bt, mapping = aes(BTEMP_SCALED, est_resp, color = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
   theme_bw()+
   ylab("Hybrid CPUE")+
   #ggtitle("Depth")+
   xlab("Bottom temperature scaled")+
-  scale_color_manual(values = c("cadetblue", "gold"), name = "")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
   theme(axis.text = element_text(size = 12),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
