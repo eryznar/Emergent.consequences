@@ -34,6 +34,7 @@ library(devtools)
 library(tinyVAST)
 library(ecmwfr)
 library(tidync)
+library(performance)
 
 # Set years
 current.year <- 2025
