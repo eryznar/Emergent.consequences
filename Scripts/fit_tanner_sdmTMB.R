@@ -12,8 +12,8 @@ tanner_cpue <- crabpack::calc_cpue(crab_data = tanner_data,
                                  species = "TANNER",
                                  region = "EBS",
                                  size_min = 50,
-                                 size_max = NULL,
-                                shell_condition = c("soft_molting", "new_hardshell"))
+                                 size_max = NULL)
+                                #shell_condition = c("soft_molting", "new_hardshell"))
 
 
 # transform model dat to sf
@@ -62,7 +62,7 @@ for (y in sort(unique(mod.dat$YEAR))) {
 }
 
 # Transform to data frame
-mod.df <- mod.dat %>%
+tanner.df <- mod.dat %>%
   cbind(st_coordinates(.)) %>%
   as.data.frame(.) %>%
   mutate(LONGITUDE = X/1000,
@@ -71,9 +71,9 @@ mod.df <- mod.dat %>%
   rename(SED = sed, ICE = ice)
 
 # Add depth and bottom temp
-mod.df2 <- tanner_data$haul %>%
+tanner.df2 <- tanner_data$haul %>%
   dplyr::select(YEAR, STATION_ID, BOTTOM_DEPTH, GEAR_TEMPERATURE) %>%
-  right_join(mod.df, .) %>%
+  right_join(tanner.df, .) %>%
   filter(YEAR >=1988) %>%
   rename(DEPTH = BOTTOM_DEPTH, BTEMP = GEAR_TEMPERATURE) %>%
   mutate(YEAR_F = as.factor(YEAR),
@@ -97,38 +97,38 @@ mod.df2 <- tanner_data$haul %>%
 
 
 # # Plot
-# ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = ICE)) +
+# ggplot(tanner.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = ICE)) +
 #   geom_tile(width = 45, height = 45) +
 #   theme_bw() +
 #   facet_wrap(~YEAR) +
 #   scale_fill_viridis_c()
 # 
-# ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = SED)) +
+# ggplot(tanner.df2, aes(LONGITUDE, LATITUDE, fill = SED)) +
 #   geom_tile(width = 45, height = 45) +
 #   theme_bw() +
 #   facet_wrap(~YEAR) +
 #   scale_fill_viridis_c()
 # 
-# ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = DEPTH)) +
-#   geom_tile(width = 45, height = 45) +
-#   theme_bw() +
-#   facet_wrap(~YEAR) +
-#   scale_fill_viridis_c()
+ggplot(tanner.df2 %>% filter(YEAR %in% 2021:2025), aes(LONGITUDE, LATITUDE, fill = DEPTH)) +
+  geom_tile(width = 45, height = 45) +
+  theme_bw() +
+  facet_wrap(~YEAR) +
+  scale_fill_viridis_c()
+
+ggplot(tanner.df2%>% filter(YEAR %in% 2021:2025), aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
+  geom_tile(width = 45, height = 45) +
+  theme_bw() +
+  facet_wrap(~YEAR) +
+  scale_fill_viridis_c()
+
+ggplot(tanner.df2 %>% filter(YEAR %in% 2021:2025), aes(LONGITUDE, LATITUDE, fill = BTEMP)) +
+  geom_tile(width = 45, height = 45) +
+  theme_bw() +
+  facet_wrap(~YEAR) +
+  scale_fill_viridis_c()
 # 
-# ggplot(mod.df2%>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
-#   geom_tile(width = 45, height = 45) +
-#   theme_bw() +
-#   facet_wrap(~YEAR) +
-#   scale_fill_viridis_c()
 # 
-# ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = BTEMP)) +
-#   geom_tile(width = 45, height = 45) +
-#   theme_bw() +
-#   facet_wrap(~YEAR) +
-#   scale_fill_viridis_c()
-# 
-# 
-# cor_dat <- mod.df2 %>%
+# cor_dat <- tanner.df2 %>%
 #   dplyr::select(where(is.numeric)) %>%
 #   dplyr::select(ICE_SCALED, DEPTH_SCALED, BTEMP_SCALED, SED_SCALED)
 # 
@@ -148,18 +148,18 @@ mod.df2 <- tanner_data$haul %>%
 
 # FIT MODELS WITH COVARIATEES ----
 # Build mesh
-mesh <- make_mesh(mod.df2, c("LONGITUDE","LATITUDE"), n_knots = 90, type = "kmeans")
+mesh <- make_mesh(tanner.df2, c("LONGITUDE","LATITUDE"), n_knots = 90, type = "kmeans")
 
 # Fit model
-mod <- sdmTMB(
+tanner.mod <- sdmTMB(
   CPUE ~ 1 +
-    DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
+    DEPTH_SCALED+ DEPTH_SCALED2+       # unimodal depth, but weak
     SED_SCALED   + SED_SCALED2 +        # unimodal sediment
     BTEMP_SCALED +                      # baseline linear temp
     ICE_SCALED,                         # baseline linear ice
   time_varying = ~ 1 +
-    DEPTH_SCALED + DEPTH_SCALED2 +      # depth niche shifts through time
-    SED_SCALED   + SED_SCALED2 +        # sediment niche shifts
+    DEPTH_SCALED +    # depth niche shifts through time
+    SED_SCALED  +    # sediment niche shifts
     BTEMP_SCALED +                      # temp effect can change by year
     ICE_SCALED,                         # ice effect can change by year
   time_varying_type = "ar1",
@@ -168,6 +168,299 @@ mod <- sdmTMB(
   family    = tweedie(link = "log"),
   time      = "YEAR",
   spatial   = "on",
-  data      = mod.df2,
+  data      = tanner.df2,
   silent    = FALSE
 )
+
+
+saveRDS(tanner.mod, "./Models/tanner_sdmTMB_tw_90.rda")
+
+# Diagnostics
+sanity(tanner.mod)
+
+# Check VIF
+m_glmm <- glmmTMB(
+  CPUE ~ 1 +
+    DEPTH_SCALED + DEPTH_SCALED2 +
+    SED_SCALED   + SED_SCALED2 +
+    BTEMP_SCALED +
+    ICE_SCALED,
+  data   = tanner.df2,
+  family = glmmTMB::tweedie(link = "log")
+)
+
+check_collinearity(m_glmm)
+
+# covariate means (for non-focal covariates)
+cov_means <- tanner.df2 %>%
+  summarise(
+    DEPTH_SCALED = mean(DEPTH_SCALED, na.rm = TRUE),
+    SED_SCALED   = mean(SED_SCALED,   na.rm = TRUE),
+    BTEMP_SCALED = mean(BTEMP_SCALED, na.rm = TRUE),
+    ICE_SCALED   = mean(ICE_SCALED,   na.rm = TRUE)
+  )
+
+# Focal years
+years_use <- c(1988:2019, 2021:2025)
+
+# Depth
+tanner_pred_depth <- make_tv_effect_quad(
+  tanner.mod,
+  data      = tanner.df2,
+  focal     = "DEPTH_SCALED",
+  n         = 100,
+  years     = years_use,
+  cov_means = cov_means
+)
+
+tanner_depth_mu <- tanner_pred_depth %>%
+  group_by(YEAR) %>%
+  reframe(get_mu(DEPTH_SCALED, est_resp)) %>%
+  mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                            (YEAR %in% 2018:2019) ~ "Heatwave",
+                            TRUE ~ "Post-heatwave"))
+
+niche_mu_test(tanner_pred_depth,
+                      focal = c("DEPTH_SCALED"),
+                      break_year = 2024,
+                      nperm = 999)
+
+ggplot(tanner_depth_mu, aes(x = YEAR, y = mu,colour = factor(period,levels = c("Pre-heatwave","Heatwave", "Post-heatwave")))) +
+  scale_color_manual(values = c("Pre-heatwave" = "cadetblue", "Heatwave"     = "darkred","Post-heatwave"= "gold"), 
+                     name = "") +
+  geom_line(linewidth = 0.75) +
+  geom_point(size = 2) +
+  theme_bw() +
+  ylab("Optimum (μ)") +
+  xlab("Year") +
+  theme(legend.position = "bottom",
+    axis.text  = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    legend.text = element_text(size = 12))
+
+ggsave("./Figures/tanner_depth_mu.png", width = 7, height = 5)
+
+
+ggplot() +
+  geom_line(tanner_pred_depth, mapping = aes(DEPTH_SCALED, est_resp, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
+  theme_bw()+
+  ylab("Tanner CPUE")+
+  #ggtitle("Depth")+
+  xlab("Depth scaled")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+ggsave("./Figures/tanner_depth_predcurves.png", width = 7, height = 5)
+
+tanner.df2 %>% filter(YEAR %in% 2021:2025) -> pp
+ggplot(tanner.df2, aes(CPUE, DEPTH))+
+  geom_point()+
+  facet_wrap(~YEAR)
+
+# Sediment
+tanner_pred_sed <- make_tv_effect_quad(
+  tanner.mod,
+  data      = tanner.df2,
+  focal     = "SED_SCALED",
+  n         = 100,
+  years     = years_use,
+  cov_means = cov_means
+)
+
+
+niche_mu_test(tanner_pred_sed,
+                      focal = c("SED_SCALED"),
+                      break_year = 2024,
+                      nperm = 999)
+
+
+tanner_sed_mu <- tanner_pred_sed %>%
+  group_by(YEAR) %>%
+  reframe(get_mu(SED_SCALED, est_resp)) %>%
+  mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                            (YEAR %in% 2018:2019) ~ "Heatwave",
+                            TRUE ~ "Post-heatwave"))
+
+ggplot(tanner_sed_mu, aes(x = YEAR, y = mu, colour = factor(period,levels = c("Pre-heatwave","Heatwave", "Post-heatwave")))) +
+  scale_color_manual(values = c("Pre-heatwave" = "cadetblue", "Heatwave"     = "darkred","Post-heatwave"= "gold"), 
+                     name = "") +
+  geom_line(linewidth = 0.75) +
+  geom_point(size = 2) +
+  theme_bw() +
+  ylab("Optimum (μ)") +
+  xlab("Year") +
+  theme(legend.position = "bottom",
+        axis.text  = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12))
+
+ggsave("./Figures/tanner_sed_mu.png", width = 7, height = 5)
+
+ggplot() +
+  geom_line(tanner_pred_sed, mapping = aes(SED_SCALED, est_resp, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
+  theme_bw()+
+  ylab("Tanner CPUE")+
+  #ggtitle("Depth")+
+  xlab("Sediment scaled")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+ggsave("./Figures/tanner_sed_predcurves.png", width = 7, height = 5)
+
+# ICE
+tanner_pred_ice <- make_tv_effect_quad(
+  tanner.mod,
+  data      = tanner.df2,
+  focal     = "ICE_SCALED",
+  n         = 100,
+  years     = years_use,
+  cov_means = cov_means
+)
+
+
+tanner_pred_ice <- tanner_pred_ice %>% mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
+                                                   (YEAR %in% 2018:2019) ~ "Heatwave",
+                                                   TRUE ~ "Post-heatwave"))
+# choose a small step for numerical derivative
+h <- 0.1
+
+# for each year, compute derivative of log-mean at ICE_SCALED = 0
+tanner_ice_slopes <- tanner_pred_ice %>%
+  group_by(YEAR, period) %>%
+  summarise(
+    # nearest points to -h, 0, +h
+    ice_minus = ICE_SCALED[which.min(abs(ICE_SCALED + h))],
+    ice_zero  = ICE_SCALED[which.min(abs(ICE_SCALED))],
+    ice_plus  = ICE_SCALED[which.min(abs(ICE_SCALED - h))],
+    eta_minus = est[which.min(abs(ICE_SCALED + h))],
+    eta_zero  = est[which.min(abs(ICE_SCALED))],
+    eta_plus  = est[which.min(abs(ICE_SCALED - h))],
+    slope = (eta_plus - eta_minus) / (ice_plus - ice_minus)
+  ) %>%
+  full_join(., expand.grid(YEAR = seq(min(.$YEAR), max(.$YEAR)), period = unique(.$period)))
+
+niche_slope_test(tanner_ice_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
+
+ggplot(tanner_ice_slopes, aes(x = YEAR, y = slope, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line(linewidth = 0.75) +
+  geom_point(size = 2) +
+  ylab("slope") +
+  xlab("Year") +
+  theme_bw() +
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
+  theme(axis.text  = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+ggsave("./Figures/tanner_ice_slope.png", width = 7, height = 5)
+
+ggplot() +
+  geom_line(tanner_pred_ice, mapping = aes(ICE_SCALED, est_resp, color =factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
+  theme_bw()+
+  ylab("Tanner CPUE")+
+  #ggtitle("Depth")+
+  xlab("Ice scaled")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+ggsave("./Figures/tanner_ice_predcurves.png", width = 7, height = 5)
+
+
+# BTEMP
+tanner_pred_bt <- make_tv_effect_quad(
+  tanner.mod,
+  data      = tanner.df2,
+  focal     = "BTEMP_SCALED",
+  n         = 100,
+  years     = years_use,
+  cov_means = cov_means
+)
+
+# 1. Compute slope of log-mean vs BTEMP_SCALED at BTEMP ≈ 0 for each year
+tanner_btemp_slopes <- tanner_pred_bt %>%
+  group_by(YEAR, period) %>%
+  summarise(
+    # nearest points to -h, 0, +h
+    btemp_minus = BTEMP_SCALED[which.min(abs(BTEMP_SCALED + h))],
+    btemp_zero  = BTEMP_SCALED[which.min(abs(BTEMP_SCALED))],
+    btemp_plus  = BTEMP_SCALED[which.min(abs(BTEMP_SCALED - h))],
+    eta_minus   = est[which.min(abs(BTEMP_SCALED + h))],
+    eta_zero    = est[which.min(abs(BTEMP_SCALED))],
+    eta_plus    = est[which.min(abs(BTEMP_SCALED - h))],
+    slope  = (eta_plus - eta_minus) / (btemp_plus - btemp_minus)
+  ) %>%
+  full_join(., expand.grid(YEAR = seq(min(.$YEAR), max(.$YEAR)), period = unique(.$period)))
+
+niche_slope_test(tanner_btemp_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
+
+ggplot(tanner_btemp_slopes, aes(x = YEAR, y = slope, color =factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line(linewidth = 0.75) +
+  geom_point(size = 2) +
+  #ggtitle("Ice")+
+  ylab("slope")+
+  xlab("Year")+
+  theme_bw()+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+ggsave("./Figures/tanner_bt_slope.png", width = 7, height = 5)
+
+ggplot() +
+  geom_line(tanner_pred_bt, mapping = aes(BTEMP_SCALED, est_resp, color = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
+  theme_bw()+
+  ylab("Tanner CPUE")+
+  #ggtitle("Depth")+
+  xlab("Bottom temperature scaled")+
+  scale_color_manual(
+    values = c("Pre-heatwave" = "cadetblue",
+               "Heatwave"     = "darkred",
+               "Post-heatwave"= "gold"),
+    name = "") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+ggsave("./Figures/tanner_bt_predcurves.png", width = 7, height = 5)
+
