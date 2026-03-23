@@ -62,7 +62,7 @@ for (y in sort(unique(mod.dat$YEAR))) {
 }
 
 # Transform to data frame
-mod.df <- mod.dat %>%
+snow.df <- mod.dat %>%
   cbind(st_coordinates(.)) %>%
   as.data.frame(.) %>%
   mutate(LONGITUDE = X/1000,
@@ -71,9 +71,9 @@ mod.df <- mod.dat %>%
   rename(SED = sed, ICE = ice)
 
 # Add depth and bottom temp
-mod.df2 <- snow_data$haul %>%
+snow.mod.df2 <- snow_data$haul %>%
   dplyr::select(YEAR, STATION_ID, BOTTOM_DEPTH, GEAR_TEMPERATURE) %>%
-  right_join(mod.df, .) %>%
+  right_join(snow.df, .) %>%
   filter(YEAR >=1988) %>%
   rename(DEPTH = BOTTOM_DEPTH, BTEMP = GEAR_TEMPERATURE) %>%
   mutate(YEAR_F = as.factor(YEAR),
@@ -92,43 +92,48 @@ mod.df2 <- snow_data$haul %>%
          is.finite(SED_SCALED)) %>%
   mutate(
     DEPTH_SCALED2 = DEPTH_SCALED^2,
-    SED_SCALED2   = SED_SCALED^2
-  )
+    SED_SCALED2   = SED_SCALED^2,
+    BTEMP_SCALED2 = BTEMP_SCALED^2,
+    ICE_SCALED2   = ICE_SCALED^2,
+    PERIOD = case_when(YEAR < 2018 ~ "Pre-heatwave",
+                       YEAR %in% 2018:2019 ~ "Heatwave",
+                       TRUE ~ "Post-heatwave"))
+  
 
 
 # # Plot
-# ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = ICE)) +
+# ggplot(snow.mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = ICE)) +
 #   geom_tile(width = 45, height = 45) +
 #   theme_bw() +
 #   facet_wrap(~YEAR) +
 #   scale_fill_viridis_c()
 # 
-# ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = SED)) +
+# ggplot(snow.mod.df2, aes(LONGITUDE, LATITUDE, fill = SED)) +
 #   geom_tile(width = 45, height = 45) +
 #   theme_bw() +
 #   facet_wrap(~YEAR) +
 #   scale_fill_viridis_c()
 # 
-# ggplot(mod.df2, aes(LONGITUDE, LATITUDE, fill = DEPTH)) +
+# ggplot(snow.mod.df2, aes(LONGITUDE, LATITUDE, fill = DEPTH)) +
 #   geom_tile(width = 45, height = 45) +
 #   theme_bw() +
 #   facet_wrap(~YEAR) +
 #   scale_fill_viridis_c()
 # 
-# ggplot(mod.df2%>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
+# ggplot(snow.mod.df2%>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = log(CPUE+10))) +
 #   geom_tile(width = 45, height = 45) +
 #   theme_bw() +
 #   facet_wrap(~YEAR) +
 #   scale_fill_viridis_c()
 # 
-# ggplot(mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = BTEMP)) +
+# ggplot(snow.mod.df2 %>% filter(YEAR %in% 2016:2025), aes(LONGITUDE, LATITUDE, fill = BTEMP)) +
 #   geom_tile(width = 45, height = 45) +
 #   theme_bw() +
 #   facet_wrap(~YEAR) +
 #   scale_fill_viridis_c()
 # 
 # 
-# cor_dat <- mod.df2 %>%
+# cor_dat <- snow.mod.df2 %>%
 #   dplyr::select(where(is.numeric)) %>%
 #   dplyr::select(ICE_SCALED, DEPTH_SCALED, BTEMP_SCALED, SED_SCALED)
 # 
@@ -148,308 +153,203 @@ mod.df2 <- snow_data$haul %>%
 
 # FIT MODELS WITH COVARIATEES ----
 # Build mesh
-mesh <- make_mesh(mod.df2, c("LONGITUDE","LATITUDE"), n_knots = 90, type = "kmeans")
+mesh <- make_mesh(snow.mod.df2, c("LONGITUDE","LATITUDE"), n_knots = 90, type = "kmeans")
 
 # Fit model
-mod <- sdmTMB(
+snow.mod <- sdmTMB(
+    CPUE ~ 1 +
+      DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
+      SED_SCALED   + SED_SCALED2 +        # unimodal sediment
+      BTEMP_SCALED +                   # baseline linear temp
+      ICE_SCALED,                         # baseline linear ice
+    time_varying = ~ 1 +
+      DEPTH_SCALED +      # depth niche shifts through time
+      SED_SCALED   +       # sediment niche shifts
+      BTEMP_SCALED +
+      ICE_SCALED,   # temp effect can change by year                   
+    time_varying_type = "ar1",
+    mesh      = mesh,
+    extra_time = 2020,
+    family    = delta_gamma(),
+    time      = "YEAR",
+    spatiotemporal = "ar1",
+    spatial   = "on",
+    data      = snow.mod.df2,
+    silent    = FALSE
+  )
+
+
+# Diagnostics
+sanity(snow.mod)
+
+# Check VIF
+m_glmm <- glmmTMB(
   CPUE ~ 1 +
+    DEPTH_SCALED + DEPTH_SCALED2 +
+    SED_SCALED   + SED_SCALED2 +
+    BTEMP_SCALED +
+    ICE_SCALED,
+  data   = snow.mod.df2,
+  family = glmmTMB::tweedie(link = "log")
+)
+
+check_collinearity(m_glmm)
+
+# Resids
+plot.resids(snow.mod, "Snow", "best")
+
+
+saveRDS(snow.mod, "./Models/snow_sdmTMB_dg_90.rda")
+
+
+
+
+# Other parameterizations ----
+# Fit model
+snow.mod2 <- sdmTMB(
+  CPUE ~ 1 +
+    PERIOD+
     DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
     SED_SCALED   + SED_SCALED2 +        # unimodal sediment
-    BTEMP_SCALED +                      # baseline linear temp
-    ICE_SCALED,                         # baseline linear ice
+    BTEMP_SCALED + BTEMP_SCALED2+                  # baseline linear temp
+    ICE_SCALED +ICE_SCALED2,                         # baseline linear ice
   time_varying = ~ 1 +
-    DEPTH_SCALED + DEPTH_SCALED2 +      # depth niche shifts through time
-    SED_SCALED   + SED_SCALED2 +        # sediment niche shifts
-    BTEMP_SCALED +                      # temp effect can change by year
-    ICE_SCALED,                         # ice effect can change by year
+    DEPTH_SCALED +      # depth niche shifts through time
+    SED_SCALED   +       # sediment niche shifts
+    BTEMP_SCALED,   # temp effect can change by year                   
   time_varying_type = "ar1",
   mesh      = mesh,
   extra_time = 2020,
   family    = tweedie(link = "log"),
   time      = "YEAR",
   spatial   = "on",
-  data      = mod.df2,
+  data      = snow.mod.df2,
   silent    = FALSE
 )
 
-
-saveRDS(mod, "./Models/snow_sdmTMB_tw_90.rda")
-
-# Diagnostics
-sanity(mod)
-
-
-# covariate means (for non-focal covariates)
-cov_means <- mod.df2 %>%
-  summarise(
-    DEPTH_SCALED = mean(DEPTH_SCALED, na.rm = TRUE),
-    SED_SCALED   = mean(SED_SCALED,   na.rm = TRUE),
-    BTEMP_SCALED = mean(BTEMP_SCALED, na.rm = TRUE),
-    ICE_SCALED   = mean(ICE_SCALED,   na.rm = TRUE)
-  )
-
-# Focal years
-years_use <- c(1988:2019, 2021:2025)
-
-# Depth
-pred_depth <- make_tv_effect_quad(
-  mod,
-  data      = mod.df2,
-  focal     = "DEPTH_SCALED",
-  n         = 100,
-  years     = years_use,
-  cov_means = cov_means
+snow.mod3 <- sdmTMB(
+  CPUE ~ 1 +
+    DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
+    SED_SCALED   + SED_SCALED2 +        # unimodal sediment
+    BTEMP_SCALED +                  # baseline linear temp
+    ICE_SCALED,                         # baseline linear ice
+  time_varying = ~ 1 +
+    DEPTH_SCALED +      # depth niche shifts through time
+    SED_SCALED   +       # sediment niche shifts
+    BTEMP_SCALED,   # temp effect can change by year                   
+  time_varying_type = "ar1",
+  mesh      = mesh,
+  extra_time = 2020,
+  family    = tweedie(link = "log"),
+  time      = "YEAR",
+  spatial   = "on",
+  data      = snow.mod.df2,
+  silent    = FALSE
 )
 
-depth_mu_sd <- pred_depth %>%
-  group_by(YEAR) %>%
-  reframe(get_mu_sigma(DEPTH_SCALED, est_resp)) %>%
-  mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
-                            (YEAR %in% 2018:2019) ~ "Heatwave",
-                            TRUE ~ "Post-heatwave"))
+snow.mod4 <- sdmTMB(
+  CPUE ~ 1 +
+    DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
+    SED_SCALED   + SED_SCALED2 +        # unimodal sediment
+    BTEMP_SCALED +                  # baseline linear temp
+    ICE_SCALED,                         # baseline linear ice
+  time_varying = ~ 1 +
+    DEPTH_SCALED +      # depth niche shifts through time
+    SED_SCALED   +       # sediment niche shifts
+    BTEMP_SCALED +   # temp effect can change by year                   
+    ICE_SCALED,
+  time_varying_type = "ar1",
+  mesh      = mesh,
+  extra_time = 2020,
+  family    = tweedie(link = "log"),
+  time      = "YEAR",
+  spatial   = "on",
+  spatiotemporal = "ar1",
+  data      = snow.mod.df2,
+  silent    = FALSE
+)
 
-niche_n_mu_sigma_test(pred_depth,
-                      focal = c("DEPTH_SCALED"),
-                      break_year = 2024,
-                      nperm = 999)
+# Fit model
+snow.mod5 <- sdmTMB(
+  CPUE ~ 1 +
+    DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
+    SED_SCALED   + SED_SCALED2 +        # unimodal sediment
+    BTEMP_SCALED +                   # baseline linear temp
+    ICE_SCALED,                         # baseline linear ice
+  time_varying = ~ 1 +
+    DEPTH_SCALED +      # depth niche shifts through time
+    SED_SCALED   +       # sediment niche shifts
+    BTEMP_SCALED +
+    ICE_SCALED,   # temp effect can change by year                   
+  time_varying_type = "ar1",
+  mesh      = mesh,
+  extra_time = 2020,
+  family    = tweedie(link = "log"),
+  time      = "YEAR",
+  spatiotemporal = "ar1",
+  spatial   = "on",
+  data      = snow.mod.df2,
+  silent    = FALSE
+)
 
-ggplot(depth_mu_sd, aes(x = sigma, y = mu, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
-  scale_color_manual(
-    values = c("Pre-heatwave" = "cadetblue",
-               "Heatwave"     = "darkred",
-               "Post-heatwave"= "gold"),
-    name = "") +
-  geom_point(size = 2) +
-  geom_text(aes(label = YEAR),
-            nudge_y = 0.03, size = 4)+
-  theme_bw()+
-  ylab("Optimum (μ)")+
-  xlab("Breadth (σ)")+
-  #ggtitle("Depth")+
-  theme(legend.position = "none",
-        axis.text = element_text(size = 12),
-        axis.title = element_text(size = 12))
+# Fit model with PERIOD × environment interactions, no time_varying slopes
+snow.mod6 <- sdmTMB(
+  CPUE ~ 1 +
+    PERIOD +                                    # baseline differences among periods
+    (DEPTH_SCALED + DEPTH_SCALED2 +
+       SED_SCALED   + SED_SCALED2  +
+       BTEMP_SCALED + ICE_SCALED) * PERIOD,       # pre/heat/post-specific niches
+  mesh         = mesh,
+  extra_time   = 2020,                          # if still needed for prediction
+  family       = tweedie(link = "log"),
+  time         = "YEAR",
+  spatial      = "on",
+  spatiotemporal = "iid",                       # or "ar1" if you want temporal structure
+  data         = snow.mod.df2,
+  silent       = FALSE
+)
 
-ggsave("./Figures/snow_depth_musigma.png", width = 7, height = 5)
-
-
-ggplot() +
-  geom_line(pred_depth, mapping = aes(DEPTH_SCALED, est_resp, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
-  theme_bw()+
-  ylab("snow CPUE")+
-  #ggtitle("Depth")+
-  xlab("Depth scaled")+
-  scale_color_manual(
-    values = c("Pre-heatwave" = "cadetblue",
-               "Heatwave"     = "darkred",
-               "Post-heatwave"= "gold"),
-    name = "") +
-  theme(axis.text = element_text(size = 12),
-        axis.title = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom",
-        legend.direction = "horizontal")
-
-ggsave("./Figures/snow_depth_predcurves.png", width = 7, height = 5)
-
-
-# Sediment
-pred_sed <- make_tv_effect_quad(
-  mod,
-  data      = mod.df2,
-  focal     = "SED_SCALED",
-  n         = 100,
-  years     = years_use,
-  cov_means = cov_means
+snow.mod7 <- sdmTMB(
+  CPUE ~ 1 +
+    PERIOD +                                    # baseline differences among periods
+    (DEPTH_SCALED + DEPTH_SCALED2 +
+       SED_SCALED   + SED_SCALED2  +
+       BTEMP_SCALED + ICE_SCALED) * PERIOD,       # pre/heat/post-specific niches
+  mesh         = mesh,
+  extra_time   = 2020,                          # if still needed for prediction
+  family       = tweedie(link = "log"),
+  time         = "YEAR",
+  spatial      = "on",
+  spatiotemporal = "ar1",                       # or "ar1" if you want temporal structure
+  data         = snow.mod.df2,
+  silent       = FALSE
 )
 
 
-niche_n_mu_sigma_test(pred_sed,
-                      focal = c("SED_SCALED"),
-                      break_year = 2024,
-                      nperm = 999)
-
-sed_mu_sd <- pred_sed %>%
-  group_by(YEAR) %>%
-  reframe(get_mu_sigma(SED_SCALED, est_resp)) %>%
-  mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
-                            (YEAR %in% 2018:2019) ~ "Heatwave",
-                            TRUE ~ "Post-heatwave"))
-
-ggplot(sed_mu_sd, aes(x = sigma, y = mu, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
-  scale_color_manual(
-    values = c("Pre-heatwave" = "cadetblue",
-               "Heatwave"     = "darkred",
-               "Post-heatwave"= "gold"),
-    name = "") +
-  geom_point() +
-  geom_text(aes(label = YEAR),
-            nudge_y = 0.03, size = 4)+
-  theme_bw()+
-  ylab("Optimum (μ)")+
-  xlab("Breadth (σ)")+
-  theme(legend.position = "none",
-        axis.text = element_text(size = 12),
-        axis.title = element_text(size = 12))
-
-ggsave("./Figures/snow_sed_musigma.png", width = 7, height = 5)
-
-ggplot() +
-  geom_line(pred_sed, mapping = aes(SED_SCALED, est_resp, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
-  theme_bw()+
-  ylab("snow CPUE")+
-  #ggtitle("Depth")+
-  xlab("Sediment scaled")+
-  scale_color_manual(
-    values = c("Pre-heatwave" = "cadetblue",
-               "Heatwave"     = "darkred",
-               "Post-heatwave"= "gold"),
-    name = "") +
-  theme(axis.text = element_text(size = 12),
-        axis.title = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom",
-        legend.direction = "horizontal")
-
-ggsave("./Figures/snow_sed_predcurves.png", width = 7, height = 5)
-
-# ICE
-pred_ice <- make_tv_effect_quad(
-  mod,
-  data      = mod.df2,
-  focal     = "ICE_SCALED",
-  n         = 100,
-  years     = years_use,
-  cov_means = cov_means
+# Fit model
+snow.mod9 <- sdmTMB(
+  CPUE ~ 1 +
+    DEPTH_SCALED + DEPTH_SCALED2 +      # unimodal depth
+    SED_SCALED   + SED_SCALED2 +        # unimodal sediment
+    BTEMP_SCALED +                   # baseline linear temp
+    ICE_SCALED,                         # baseline linear ice
+  time_varying = ~ 1 +
+    DEPTH_SCALED +      # depth niche shifts through time
+    SED_SCALED   +       # sediment niche shifts
+    BTEMP_SCALED +
+    ICE_SCALED,   # temp effect can change by year                   
+  time_varying_type = "ar1",
+  mesh      = mesh,
+  extra_time = 2020,
+  family    = delta_gamma(),
+  time      = "YEAR",
+  spatiotemporal = "ar1",
+  spatial   = "on",
+  data      = snow.mod.df2,
+  silent    = FALSE
 )
 
-pred_ice <- pred_ice %>% mutate(period = case_when((YEAR <2018) ~ "Pre-heatwave",
-                                                   (YEAR %in% 2018:2019) ~ "Heatwave",
-                                                   TRUE ~ "Post-heatwave"))
-# choose a small step for numerical derivative
-h <- 0.1
-
-# for each year, compute derivative of log-mean at ICE_SCALED = 0
-ice_slopes <- pred_ice %>%
-  group_by(YEAR, period) %>%
-  summarise(
-    # nearest points to -h, 0, +h
-    ice_minus = ICE_SCALED[which.min(abs(ICE_SCALED + h))],
-    ice_zero  = ICE_SCALED[which.min(abs(ICE_SCALED))],
-    ice_plus  = ICE_SCALED[which.min(abs(ICE_SCALED - h))],
-    eta_minus = est[which.min(abs(ICE_SCALED + h))],
-    eta_zero  = est[which.min(abs(ICE_SCALED))],
-    eta_plus  = est[which.min(abs(ICE_SCALED - h))],
-    slope = (eta_plus - eta_minus) / (ice_plus - ice_minus)
-  ) %>%
-  full_join(., expand.grid(YEAR = seq(min(.$YEAR), max(.$YEAR)), period = unique(.$period)))
-
-niche_slope_test(ice_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
-
-ggplot(ice_slopes, aes(x = YEAR, y = slope, colour = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_line(linewidth = 0.75) +
-  geom_point(size = 2) +
-  ylab("slope") +
-  xlab("Year") +
-  theme_bw() +
-  scale_color_manual(
-    values = c("Pre-heatwave" = "cadetblue",
-               "Heatwave"     = "darkred",
-               "Post-heatwave"= "gold"),
-    name = "") +
-  theme(axis.text  = element_text(size = 12),
-        axis.title = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom",
-        legend.direction = "horizontal")
-
-ggsave("./Figures/snow_ice_slope.png", width = 7, height = 5)
-
-ggplot() +
-  geom_line(pred_ice, mapping = aes(ICE_SCALED, est_resp, color =factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
-  theme_bw()+
-  ylab("snow CPUE")+
-  #ggtitle("Depth")+
-  xlab("Ice scaled")+
-  scale_color_manual(
-    values = c("Pre-heatwave" = "cadetblue",
-               "Heatwave"     = "darkred",
-               "Post-heatwave"= "gold"),
-    name = "") +
-  theme(axis.text = element_text(size = 12),
-        axis.title = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom",
-        legend.direction = "horizontal")
-
-ggsave("./Figures/snow_ice_predcurves.png", width = 7, height = 5)
-
-
-# BTEMP
-pred_bt <- make_tv_effect_quad(
-  mod,
-  data      = mod.df2,
-  focal     = "BTEMP_SCALED",
-  n         = 100,
-  years     = years_use,
-  cov_means = cov_means
-)
-
-# 1. Compute slope of log-mean vs BTEMP_SCALED at BTEMP ≈ 0 for each year
-btemp_slopes <- pred_bt %>%
-  group_by(YEAR, period) %>%
-  summarise(
-    # nearest points to -h, 0, +h
-    btemp_minus = BTEMP_SCALED[which.min(abs(BTEMP_SCALED + h))],
-    btemp_zero  = BTEMP_SCALED[which.min(abs(BTEMP_SCALED))],
-    btemp_plus  = BTEMP_SCALED[which.min(abs(BTEMP_SCALED - h))],
-    eta_minus   = est[which.min(abs(BTEMP_SCALED + h))],
-    eta_zero    = est[which.min(abs(BTEMP_SCALED))],
-    eta_plus    = est[which.min(abs(BTEMP_SCALED - h))],
-    slope  = (eta_plus - eta_minus) / (btemp_plus - btemp_minus)
-  ) %>%
-  full_join(., expand.grid(YEAR = seq(min(.$YEAR), max(.$YEAR)), period = unique(.$period)))
-
-niche_slope_test(btemp_slopes, slope_col = "slope", break_year = 2024, nperm = 999)
-
-ggplot(btemp_slopes, aes(x = YEAR, y = slope, color =factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")))) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_line(linewidth = 0.75) +
-  geom_point(size = 2) +
-  #ggtitle("Ice")+
-  ylab("slope")+
-  xlab("Year")+
-  theme_bw()+
-  scale_color_manual(
-    values = c("Pre-heatwave" = "cadetblue",
-               "Heatwave"     = "darkred",
-               "Post-heatwave"= "gold"),
-    name = "") +
-  theme(axis.text = element_text(size = 12),
-        axis.title = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom",
-        legend.direction = "horizontal")
-
-ggsave("./Figures/snow_bt_slope.png", width = 7, height = 5)
-
-ggplot() +
-  geom_line(pred_bt, mapping = aes(BTEMP_SCALED, est_resp, color = factor(period, levels = c("Pre-heatwave", "Heatwave", "Post-heatwave")), group = YEAR), size = 1)+
-  theme_bw()+
-  ylab("snow CPUE")+
-  #ggtitle("Depth")+
-  xlab("Bottom temperature scaled")+
-  scale_color_manual(
-    values = c("Pre-heatwave" = "cadetblue",
-               "Heatwave"     = "darkred",
-               "Post-heatwave"= "gold"),
-    name = "") +
-  theme(axis.text = element_text(size = 12),
-        axis.title = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom",
-        legend.direction = "horizontal")
-
-ggsave("./Figures/snow_bt_predcurves.png", width = 7, height = 5)
-
+AIC(snow.mod, snow.mod2, snow.mod3, snow.mod4, snow.mod5, snow.mod6, snow.mod7, snow.mod8, snow.mod9) %>%
+  mutate(type = c("period", "quadfixed_btempice", "no period", "timevarying ice", "timevarying, ar1 spRF", "no time varying, iid spRF",  
+                  "no time varying with period, ar1 spRF", "timevarying, ar1 spRF, DG", "ice")) %>%
+  arrange(AIC)
